@@ -682,11 +682,7 @@ export default function Dashboard({
                   return r.url
                 }}
                 onRetryPages={retryMetaPageList}
-                onLinkManual={async (inp) => {
-                  const r = await configureMetaManual(inp)
-                  await handleRefreshStatus()
-                  return r
-                }}
+                onLinkManual={configureMetaManual}
                 onSetState={handleSetMetaState}
                 onSyncAds={syncMetaAds}
                 APP_ID={APP_ID}
@@ -947,11 +943,7 @@ export default function Dashboard({
                   return r.url
                 }}
                 onRetryPages={retryMetaPageList}
-                onLinkManual={async (inp) => {
-                  const r = await configureMetaManual(inp)
-                  await handleRefreshStatus()
-                  return r
-                }}
+                onLinkManual={configureMetaManual}
                 onSetState={handleSetMetaState}
                 onSyncAds={syncMetaAds}
                 APP_ID={APP_ID}
