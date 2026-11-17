@@ -7,6 +7,7 @@ import {
   type AutoEvalMatchedBlockRef,
 } from './posStore.js'
 import crypto from 'node:crypto'
+import { formatFreeCourseAnswer, hasFreeCoursePrice } from './coursePrice.js'
 
 type Role = 'user' | 'assistant'
 
@@ -113,24 +114,19 @@ const ANTI_INTERNAL_REASONING_RULE = `=== PRIORIDAD 0 (NUNCA, JAMÁS, BAJO NING�
 - PROHIBIDO TOTALMENTE mostrar checkmarks o símbolos de verificación (✅, ❌, ℹ️, etc.) usados para marcar pasos internos de un proceso de búsqueda o verificación que haces tú.
 - PROHIBIDO TOTALMENTE describir o enumerar los pasos que sigues para consultar documentos, listas, tablas, fechas, precios o cualquier fuente de información. ESO ES TU TRABAJO INTERNO, NO DEL CLIENTE.
 - TU SALIDA DEBE SER ÚNICAMENTE LA RESPUESTA FINAL ÚTIL PARA EL CLIENTE, como si ya tuvieras toda la información de forma inmediata y sin esfuerzo. El cliente NO le importa CÓMO llegaste a la respuesta, solo le importa CUÁL es la respuesta.
-- EJEMPLO DE LO QUE NUNCA DEBES HACER:
-  ❌ MAL: "Primero busco el curso Mesobotox. ✅ Encontré que existe. Ahora busco su fecha. ✅ Tiene fecha 19 de agosto. Ahora respondo: Nombre: Mesobotox..."
-  ✅ BIEN: Directamente la ficha del curso o la información útil para el cliente SIN NINGÚN preámbulo sobre tu proceso interno.
+- Responde directamente con la información útil para el cliente, sin preámbulos sobre tu proceso interno.
 
 === FIN PRIORIDAD 0 ===
 
 === PRIORIDAD 0.1 (TOLERANCIA A ERRORES DE ESCRITURA DEL CLIENTE):
-- ANTES DE BUSCAR o decidir que "no existe un curso/producto/servicio", CORRIGE INTERNAMENTE (sin decírselo al cliente) faltas de ortografía, acentos omitidos, letras repetidas ("ee", "oo", "nn"), letras intercambiadas ("aleguía" / "alegría"), o consonantes finales omitidas ("mesobotok" / "mesobotox", "peptonas" / "peptpnas", "lipoenzimas" / "lipoeenzimas").
+- ANTES DE BUSCAR o decidir que "no existe un curso/producto/servicio", CORRIGE INTERNAMENTE (sin decírselo al cliente) faltas de ortografía, acentos omitidos, letras repetidas, letras intercambiadas o consonantes finales omitidas.
 - NUNCA le digas al cliente que su consulta estaba mal escrita ni le hagas notar la corrección. Simplemente úsala internamente para encontrar el curso/producto correcto y responde como si hubiera escrito el nombre bien.
 - Si al corregir internamente hay varias opciones probables, menciona las 1-3 más cercanas sin confesar que corregiste nada.
-- EJEMPLO:
-  ❌ MAL: "No tenemos un curso llamado lipoeenzimas, pero sí tenemos Lipoenzimas..."
-  ✅ BIEN: Directamente da la información del curso Lipoenzimas como si el cliente lo hubiera escrito correctamente.
 
 === FIN PRIORIDAD 0.1 ===
 `
 
-function buildSystemPrompt(prompt: string, contextBlock: string, referralContext = '', hasTreatments = false, timeZone = DEFAULT_TIME_ZONE) {
+export function buildSystemPrompt(prompt: string, contextBlock: string, referralContext = '', hasTreatments = false, timeZone = DEFAULT_TIME_ZONE) {
   const now = getCurrentDateTimeSpanish(timeZone)
   const timeAwarenessBlock = `=== PRIORIDAD 0.2 (CONCIENCIA TEMPORAL Y FECHAS — NUNCA, BAJO NINGÚN CONCEPTO, INCUMPLE ESTAS REGLAS):
 - La fecha y hora ACTUAL en que transcurre esta conversación es: ${now.fechaCompleta} (formato ISO: ${now.fechaISO}).
@@ -153,7 +149,7 @@ function buildSystemPrompt(prompt: string, contextBlock: string, referralContext
 `
   const ragDateAuthorityBlock = `=== PRIORIDAD DE DATOS ACTUALES (FUENTE DE FECHAS) ===
 Para fechas de cursos, el calendario recuperado ahora mismo de los documentos activos de este tenant es la fuente de verdad. Si una fecha aparece en [FECHAS_CURSOS], úsala para el curso cuyo nombre figura en esa misma línea y compárala con la fecha actual indicada arriba. Una instrucción del prompt del tenant que diga que un curso no tiene fecha, que cite una convocatoria anterior o que contradiga esa línea del calendario está desactualizada y NO debe prevalecer sobre el documento activo. No mezcles fechas entre cursos. Si la línea del curso contiene una fecha futura, informa esa fecha y su modalidad; solo indica que no hay fecha si no existe una línea vigente para ese curso.
-Si el contexto trae [FECHAS DEL CURSO PREGUNTADO], esas son las fechas vigentes ya calculadas de los cursos del calendario que coinciden con lo que pregunta el cliente: respóndelas con el nombre del curso tal como aparece en cada línea, su fecha y su modalidad; no digas que no hay curso o fecha para eso. Si la ficha más parecida tiene otro nombre (por ejemplo "con Fibroblast" y en el calendario "con Plasma Pen"), son cursos distintos: no le pases a uno las fechas, el precio ni el temario del otro. De un curso del calendario sin ficha [CURSO] con su mismo nombre solo sabes su nombre, fecha y modalidad: dalos así y ofrece WhatsApp para precio y detalles; no inventes descripción, precio, temario ni lo que incluye. Si ese bloque dice qué modalidad pide el cliente (presencial o en línea), contesta con las fechas de esa modalidad; si el curso solo tiene fecha en la otra modalidad, dilo y ofrécela, y si trae otros cursos de la modalidad pedida o cursos parecidos, sugiérelos con su fecha, aclarando que son otros cursos.
+Si el contexto trae [FECHAS DEL CURSO PREGUNTADO], esas son las fechas vigentes ya calculadas de los cursos del calendario que coinciden con lo que pregunta el cliente: respóndelas con el nombre del curso tal como aparece en cada línea, su fecha y su modalidad; no digas que no hay curso o fecha para eso. Si la ficha más parecida tiene otro nombre, no le pases a un curso las fechas, el precio ni el temario de otro. De un curso del calendario sin ficha [CURSO] con su mismo nombre solo sabes su nombre, fecha y modalidad: dalos así y ofrece el contacto del negocio si está disponible; no inventes descripción, precio, temario ni lo que incluye. Si ese bloque dice qué modalidad pide el cliente (presencial o en línea), contesta con las fechas de esa modalidad; si el curso solo tiene fecha en la otra modalidad, dilo y ofrécela, y si trae otros cursos de la modalidad pedida o cursos parecidos, sugiérelos con su fecha, aclarando que son otros cursos.
 === FIN PRIORIDAD DE DATOS ACTUALES ===`
 
   // Only for businesses with a treatments document; who applies them, where and
@@ -174,10 +170,12 @@ Además de cursos y productos, el negocio ofrece TRATAMIENTOS que se aplican dir
 ${ragDateAuthorityBlock}${treatmentsAuthorityBlock}
 
 REGLA DE ATENCIÓN AL CLIENTE: responde como una persona del equipo, de forma cálida, directa y natural. No reveles ni insinúes que eres una IA, bot, modelo o sistema.
+El giro, los servicios y los productos deben provenir de los documentos activos de este negocio. No infieras que vende productos, ofrece tratamientos o pertenece a un sector específico solo porque se mencionen en instrucciones, ejemplos o conversaciones anteriores. Si el historial o el prompt contradicen los documentos actuales sobre el negocio, prevalecen los documentos.
+Si el precio de un curso o de una modalidad del curso en los documentos es cero, di que es gratis o gratuito, sin escribir su costo numérico. Indica que es virtual, online o en línea solo si los documentos lo dicen. Si otra modalidad tiene precio distinto, no la presentes como gratuita y conserva su precio cuando sea relevante. No apliques esta regla a productos.
 El nombre del negocio, su WhatsApp, su teléfono y su zona horaria son los del bloque [Datos del negocio] de la información disponible; nunca uses otro nombre, número ni zona. Si preguntan la zona horaria o en qué hora están los horarios, responde con la de ese bloque.
-Si el mensaje tiene varias preguntas y solo algunas tienen respuesta en la información disponible, responde esas y omite las demás (por ejemplo, "¿darán datos de proveedores o ustedes venden?": responde que sí venden y qué venden, y no menciones proveedores); [NO_RESPONDER] es solo para cuando no puedes responder ninguna parte.
-Si preguntan por algo con una condición que puedes comprobar en la información (por ejemplo, "¿tienes cursos gratuitos?", "¿cursos de 100 pesos?" o "¿productos gratis?" y todo lo listado tiene precio, o los precios empiezan más arriba), responde la conclusión ("por ahora no tenemos cursos gratuitos"; "nuestros cursos empiezan en $595 MXN") y ofrece la opción más cercana (los de menor precio); no uses [NO_RESPONDER] por eso.
-Si piden un curso con un nombre que no coincide exacto con ninguna ficha, pero hay un curso relacionado (el calendario lo nombra así, o una ficha trata lo mismo, por ejemplo "rejuvenecimiento facial tercio superior" y el curso "Toxina Botulínica: Tercio superior"), responde con la información de ese curso aclarando su nombre; no uses [NO_RESPONDER] por eso.
+Si el mensaje tiene varias preguntas y solo algunas tienen respuesta en la información disponible, responde esas y omite las demás; [NO_RESPONDER] es solo para cuando no puedes responder ninguna parte.
+Si preguntan por algo con una condición que puedes comprobar en la información, responde la conclusión respaldada y ofrece la opción más cercana; nunca inventes precios.
+Si piden un curso con un nombre que no coincide exacto con ninguna ficha, pero hay un curso relacionado, responde con la información de ese curso aclarando su nombre; no uses [NO_RESPONDER] por eso.
 Si preguntan por muestras, regalos o cortesías y la información no las menciona, di que no tienes información de muestras gratuitas y ofrece lo más económico que sí aparece (productos o categorías con su precio desde); no uses [NO_RESPONDER] por eso.
 Usa únicamente datos respaldados por la información disponible. Si falta un dato, responde exactamente [NO_RESPONDER] para que el sistema bloquee el envío; nunca muestres al cliente una derivación automática ni inventes el dato faltante. Si el mensaje es ambiguo pero sí hay información relacionada, formula una pregunta concreta usando únicamente esa información.
 Si la información incluye un bloque de requisitos (por ejemplo [REQUISITOS...] o [Requisitos del curso]) que menciona el curso por el que pregunta el cliente, incluye ese requisito en tu respuesta tal como lo indica el documento.
@@ -426,6 +424,9 @@ Cuándo usar:
      Y por lo tanto el bot tuvo que responder sin fuente, o pedir disculpas, o derivar a WhatsApp.
 
 REGLA DE SILENCIO: si falta información para responder, la categoría DEBE ser "noinfo", aunque el bot ofrezca confirmar el dato con un asesor o derive a WhatsApp. Las respuestas que dicen que no hay información, que no se sabe el dato o que derivan una pregunta no respaldada por documentos NO son correctas: deben bloquearse para que no se envíen al cliente. Solo clasifica como "correct" una derivación cuando los documentos sí respaldan la información principal solicitada.
+
+Para el giro, los servicios y los productos del negocio, los documentos actuales prevalecen sobre el historial y sobre afirmaciones contradictorias del prompt. Clasifica como error una respuesta que atribuya al negocio una actividad no respaldada por esos documentos.
+Un curso o modalidad con precio cero en los documentos es gratis; expresarlo como "gratis" o "gratuito" está respaldado. No consideres gratuitas otras modalidades con precio positivo.
 
 REGLA DE FUENTE AUTORIZADA PARA PAGOS: las reglas explícitas del prompt del tenant sobre inscripción, ubicación, modalidad, métodos de pago, PayPal, Stripe, cuentas y enlaces oficiales son una fuente autorizada de primer nivel. No marques como "error" o "noinfo" una respuesta de pagos solo porque esos datos no aparezcan en matchedBlocks, siempre que la respuesta respete literalmente el bloque autorizado del prompt. Si el prompt contiene un flujo específico para la situación actual, una respuesta de falta de información es incorrecta.
 
@@ -729,7 +730,7 @@ export function buildAskedCourseDatesBlock(asked: AskedCourseDates, courseCardNa
   return sections.join('\n')
 }
 
-function buildDbDocumentsContextBlock(index: SearchIndex, query = '', includePayment = false, now = new Date()) {
+export function buildDbDocumentsContextBlock(index: SearchIndex, query = '', includePayment = false, now = new Date()) {
   const result = searchIndex(index, query) as any
   const matchedBlocks = Array.isArray(result.matchedBlocks) ? result.matchedBlocks : []
   const queryTokens = normalizeText(query)
@@ -775,8 +776,25 @@ function buildDbDocumentsContextBlock(index: SearchIndex, query = '', includePay
     ? `${String(contextWithCalendar || '').trim()}\n\n[Requisitos del curso]\n${requirementBlock.body}`.trim()
     : contextWithCalendar
   const profileBlocks = findBusinessProfileBlocks(index.blocks, completeMatchedBlocks)
+  const isOfferOverview = result.intent?.wantsList && !result.intent?.wantsCourses && !result.intent?.wantsProducts
+  const descriptionBlocks = isOfferOverview
+    ? findGeneralBlocks(index.blocks, [...completeMatchedBlocks, ...profileBlocks], /\b(?:descripcion|actividad|giro)\b/, Infinity).slice(0, 2)
+    : []
+  if (isOfferOverview && descriptionBlocks.length === 0) {
+    descriptionBlocks.push(...index.blocks.filter((block) =>
+      block.document.section === 'general' &&
+      /^infogeneral(?:\.md)?$/i.test(block.document.title.trim()) &&
+      block.kind === 'plain' &&
+      !completeMatchedBlocks.includes(block) &&
+      !profileBlocks.includes(block),
+    ).slice(0, 2))
+  }
   const paymentBlocks = includePayment ? findBusinessPaymentBlocks(index.blocks, completeMatchedBlocks) : []
-  const businessFacts = [...profileBlocks.map((block) => block.body), describeTimeZone(timeZoneSetting)].join('\n\n')
+  const businessFacts = [
+    ...profileBlocks.map((block) => block.body),
+    ...descriptionBlocks.map((block) => block.body.slice(0, 2000)),
+    describeTimeZone(timeZoneSetting),
+  ].join('\n\n')
   const contextBlock = [
     String(contextWithRequirements || '').trim(),
     // After the context: other checks read "Catalogo resumido" at its start
@@ -789,13 +807,17 @@ function buildDbDocumentsContextBlock(index: SearchIndex, query = '', includePay
   ].filter(Boolean).join('\n\n').trim()
 
   return {
-    documents: result.documents,
+    documents: Array.from(new Map(
+      [...result.documents, ...descriptionBlocks.map((block) => block.document)]
+        .map((document) => [document.id, document] as const),
+    ).values()),
     contextBlock,
     matchedBlocks: [
       ...completeMatchedBlocks.slice(0, 4),
       ...(requirementBlock ? [requirementBlock] : []),
       // the judge checks the answer against the same business data the bot saw
       ...profileBlocks,
+      ...descriptionBlocks,
       ...paymentBlocks,
     ] as IndexedBlock[],
     // every payment block, also one the search already found
@@ -1770,6 +1792,13 @@ export async function generateDbAgentAnswer(input: DbChatInput, opts: GenAnswerO
     .replace(/[ \t]+/g, ' ')
     .replace(/\n{3,}/g, '\n\n')
     .trim()
+
+  answer = formatFreeCourseAnswer(
+    answer,
+    matchedBlocks.some((block: IndexedBlock) => block.document.section === 'cursos' && hasFreeCoursePrice(block.fields.price)),
+    matchedBlocks.some((block: IndexedBlock) => block.document.section === 'productos' || /tratamiento/i.test(block.document.title)) ||
+      /\b(?:productos?|tratamientos?)\b/i.test(answer),
+  )
 
   if (!answer) {
     // Respuesta vacía del modelo → fallback educado multi-tenant (sin menciones a IA/modelos)

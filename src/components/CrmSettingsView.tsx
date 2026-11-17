@@ -12,6 +12,7 @@ import {
   Megaphone,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { shouldShowConnectPage } from '@/lib/metaPageSelection'
 import type { MetaBotState, MetaStatusResponse } from '@/lib/api'
 
 type CrmSettingsViewProps = {
@@ -77,6 +78,7 @@ export default function CrmSettingsView(props: CrmSettingsViewProps) {
   const [lastSaved, setLastSaved] = useState<{ ok: boolean; text: string } | null>(null)
   const [fbPagesFetched, setFBPagesFetched] = useState<any[] | null>(null)
   const [fbPageSelectedIdx, setFBPageSelectedIdx] = useState<number | null>(null)
+  const [lastLinkedPageId, setLastLinkedPageId] = useState<string | null>(null)
   const [canRetryPages, setCanRetryPages] = useState(false)
   const [retryingPages, setRetryingPages] = useState(false)
   const [syncingAds, setSyncingAds] = useState(false)
@@ -84,6 +86,12 @@ export default function CrmSettingsView(props: CrmSettingsViewProps) {
 
   const callbacksRef = useRef({ onLinkManual, onRefresh, onSetState })
   callbacksRef.current = { onLinkManual, onRefresh, onSetState }
+
+  useEffect(() => {
+    if (lastLinkedPageId && status?.linked && status.pageId === lastLinkedPageId) {
+      setLastLinkedPageId(null)
+    }
+  }, [lastLinkedPageId, status?.linked, status?.pageId])
 
   useEffect(() => {
     const onLinkManual: typeof callbacksRef.current.onLinkManual = (inp) => callbacksRef.current.onLinkManual(inp)
@@ -148,6 +156,7 @@ export default function CrmSettingsView(props: CrmSettingsViewProps) {
           if (Array.isArray(pages) && pages.length > 0) {
             setCanRetryPages(false)
             setFBPagesFetched(pages)
+            setLastSaved(null)
             if (pages.length === 1) {
               const only = pages[0] as any
               setFBPageSelectedIdx(0)
@@ -166,6 +175,7 @@ export default function CrmSettingsView(props: CrmSettingsViewProps) {
                     : 'Error guardando la página.',
                 })
                 if (r.success) {
+                  setLastLinkedPageId(r.pageId)
                   try { await onSetState({ state: 'START' }) } catch (_) {}
                   try { await onRefresh() } catch (_) {}
                   const u = new URL(window.location.href)
@@ -261,6 +271,7 @@ export default function CrmSettingsView(props: CrmSettingsViewProps) {
   function handleSelectFetchedPage(i: number) {
     if (!fbPagesFetched) return
     setFBPageSelectedIdx(i)
+    if (i !== fbPageSelectedIdx) setLastSaved(null)
   }
 
   async function handleOAuthUrlClick() {
@@ -298,6 +309,9 @@ export default function CrmSettingsView(props: CrmSettingsViewProps) {
       setRetryingPages(false)
     }
   }
+
+  const selectedPageId = fbPageSelectedIdx === null ? undefined : fbPagesFetched?.[fbPageSelectedIdx]?.id
+  const connectedPageId = lastLinkedPageId || (status?.linked ? status.pageId : undefined)
 
   return (
     <section className="h-full w-full overflow-y-auto bg-[radial-gradient(ellipse_at_top,_#123c61_0%,_#0c2a47_55%)] px-4 py-6 tech-scrollbar sm:px-6">
@@ -392,6 +406,7 @@ export default function CrmSettingsView(props: CrmSettingsViewProps) {
                         key={p.id || String(i)}
                         aria-pressed={fbPageSelectedIdx === i}
                         onClick={() => handleSelectFetchedPage(i)}
+                        disabled={loadingSave}
                         className={cn(
                           'flex min-w-0 items-center gap-3 rounded-xl border px-3 py-2.5 text-left transition',
                           fbPageSelectedIdx === i
@@ -424,7 +439,7 @@ export default function CrmSettingsView(props: CrmSettingsViewProps) {
                       </button>
                     ))}
                   </div>
-                  {fbPageSelectedIdx !== null ? (
+                  {shouldShowConnectPage(selectedPageId, connectedPageId) && fbPageSelectedIdx !== null ? (
                     <button
                       type="button"
                       onClick={() => void (async () => {
@@ -445,6 +460,7 @@ export default function CrmSettingsView(props: CrmSettingsViewProps) {
                               : 'Error guardando la página.',
                           })
                           if (r.success) {
+                            setLastLinkedPageId(r.pageId)
                             try { await onSetState({ state: 'START' }) } catch (_) {}
                             try { await onRefresh() } catch (_) {}
                             const u = new URL(window.location.href)

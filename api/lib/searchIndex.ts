@@ -1,6 +1,7 @@
 import type { DocumentSection, WorkspaceDocument } from './workspace.js'
 
 import { createHash } from 'node:crypto'
+import { hasFreeCoursePrice } from './coursePrice.js'
 
 const MAX_CONTEXT_BLOCKS = 4
 const MAX_CONTEXT_CHARS = 3200
@@ -1047,21 +1048,23 @@ function buildCategoryCatalogSummary(blocks: IndexedBlock[]) {
   return `Catalogo resumido encontrado en los documentos (${blocks.length} productos en total, por categoria; pregunta al cliente que categoria o producto busca):\n${lines.join('\n')}`
 }
 
-// "$1,350 MXN" or "Online: $595 MXN / Presencial: $1350 MXN" to its lowest amount;
-// $0 is a price nobody filled in, not a free item
+// Product $0 remains an unfilled price; course $0 is an explicitly free course.
 function lowestPrice(price: string) {
   return priceAmounts(price).sort((left, right) => left.amount - right.amount)[0] || null
 }
 
 // Every amount of a price ("Online: $595 MXN ($33 USD) / Presencial: $1350 MXN");
 // the dollar equivalents only when the price has nothing else
-function priceAmounts(price: string) {
+function priceAmounts(price: string, includeZero = false) {
   const amounts: Array<{ amount: number; text: string; dollars: boolean }> = []
   for (const match of price.matchAll(/\$\s*(\d[\d,]*(?:\.\d+)?)(?:\s*(MXN|USD|pesos|dolares|dólares))?/gi)) {
     const amount = Number(match[1].replace(/,/g, ''))
-    if (Number.isFinite(amount) && amount > 0) {
+    if (Number.isFinite(amount) && (amount > 0 || (includeZero && amount === 0))) {
       amounts.push({ amount, text: match[0].trim(), dollars: /^(?:usd|dolares|dólares)$/i.test(match[2] || '') })
     }
+  }
+  if (includeZero && hasFreeCoursePrice(price) && !amounts.some((item) => item.amount === 0)) {
+    amounts.push({ amount: 0, text: 'gratis', dollars: false })
   }
   const local = amounts.filter((item) => !item.dollars)
   return (local.length > 0 ? local : amounts).map(({ amount, text }) => ({ amount, text }))
@@ -1379,7 +1382,7 @@ function buildPriceRangeSummary(blocks: IndexedBlock[], amount: number) {
     // A course priced online and in person counts by the price closest to the amount
     .map((block) => ({
       block,
-      price: priceAmounts(block.fields.price).sort((left, right) => Math.abs(left.amount - amount) - Math.abs(right.amount - amount))[0],
+      price: priceAmounts(block.fields.price, block.document.section === 'cursos').sort((left, right) => Math.abs(left.amount - amount) - Math.abs(right.amount - amount))[0],
     }))
     .filter((item): item is { block: IndexedBlock; price: { amount: number; text: string } } => Boolean(item.price))
   if (priced.length === 0) return null
@@ -1390,7 +1393,7 @@ function buildPriceRangeSummary(blocks: IndexedBlock[], amount: number) {
     .sort((left, right) => Math.abs(left.price.amount - amount) - Math.abs(right.price.amount - amount))
     .slice(0, 25)
     .sort((left, right) => left.price.amount - right.price.amount)
-  const amounts = priced.flatMap(({ block }) => priceAmounts(block.fields.price).map((price) => price.amount))
+  const amounts = priced.flatMap(({ block }) => priceAmounts(block.fields.price, block.document.section === 'cursos').map((price) => price.amount))
   const header = near.length > 0
     ? `Catalogo con precio cercano a $${amount} encontrado en los documentos (${near.length} en total${near.length > chosen.length ? ', se muestran algunos' : ''}):`
     : `Ningun elemento cuesta cerca de $${amount}; los precios van de $${Math.min(...amounts)} a $${Math.max(...amounts)}. Los mas cercanos:`
@@ -1484,6 +1487,22 @@ function searchCorrectedQuery(index: SearchIndex, query: string): SearchContextR
         documents: Array.from(new Map(overview.blocks.map((block) => [block.document.id, block.document])).values()),
         contextBlock: overview.contextBlock.slice(0, MAX_CONTEXT_CHARS * 2),
         matchedBlocks: overview.blocks.slice(0, MAX_CONTEXT_BLOCKS),
+        intent,
+      }
+    }
+  }
+
+  if (intent.wantsCourses && /\b(?:gratis|gratuit[oa]s?)\b/.test(normalizeText(query)) &&
+      !/\b(?:pagad[oa]s?|pago|costo|precio|precios)\b/.test(normalizeText(query))) {
+    const freeCourses = candidateBlocks.filter((block) =>
+      block.document.section === 'cursos' && isCatalogLikeBlock(block) && block.fields.name && hasFreeCoursePrice(block.fields.price),
+    )
+    const summary = buildStructuredCatalogSummary(freeCourses, MAX_CONTEXT_CHARS * 2)
+    if (summary) {
+      return {
+        documents: Array.from(new Map(freeCourses.map((block) => [block.document.id, block.document])).values()),
+        contextBlock: summary,
+        matchedBlocks: freeCourses.slice(0, MAX_CONTEXT_BLOCKS),
         intent,
       }
     }
