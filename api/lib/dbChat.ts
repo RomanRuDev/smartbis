@@ -795,6 +795,16 @@ export function buildDbDocumentsContextBlock(index: SearchIndex, query = '', inc
     ...descriptionBlocks.map((block) => block.body.slice(0, 2000)),
     describeTimeZone(timeZoneSetting),
   ].join('\n\n')
+  const unavailableModalities = asksAboutCourses || askedCourseDates.modality
+    ? findUnavailableCourseModalities(calendarBlocks, now, timeZoneSetting.zone)
+    : []
+  const pluralModality = (modality: string) => (modality === 'presencial' ? 'presenciales' : 'en línea')
+  const unavailableModalitiesBlock = unavailableModalities.length
+    ? `[MODALIDADES SIN CURSOS]\nSegún el calendario vigente, por el momento no hay cursos ${unavailableModalities.map(pluralModality).join(' ni ')}. ` +
+      (askedCourseDates.modality && unavailableModalities.includes(askedCourseDates.modality)
+        ? `El cliente pregunta por la modalidad ${askedCourseDates.modality}: dile claramente que por el momento no hay cursos ${pluralModality(askedCourseDates.modality)} programados. Si nombra un curso y su ficha existe, da la información de la ficha (temario, precio, etc.) sin inventar fechas de esa modalidad, y ofrece las fechas de la otra modalidad si las hay.`
+        : 'No ofrezcas ni inventes fechas de esa modalidad; si el cliente la pide, dile que por el momento no hay.')
+    : ''
   const contextBlock = [
     String(contextWithRequirements || '').trim(),
     // After the context: other checks read "Catalogo resumido" at its start
@@ -802,6 +812,7 @@ export function buildDbDocumentsContextBlock(index: SearchIndex, query = '', inc
       askedCourseDates,
       index.blocks.filter((block) => block.document.section === 'cursos' && /^\s*\[CURSO\]/m.test(block.body)).map((block) => block.fields.name),
     ),
+    unavailableModalitiesBlock,
     `[Datos del negocio]\n${businessFacts}`,
     paymentBlocks.length > 0 && `[Pagos del negocio]\n${paymentBlocks.map((block) => block.body).join('\n\n')}`,
   ].filter(Boolean).join('\n\n').trim()
@@ -903,6 +914,32 @@ function parseScheduledCourseDates(matchedBlocks: IndexedBlock[], currentYear: n
     }
   }
   return dates
+}
+
+// The calendar can say a modality has no courses ("Presencial tenemos programados: Sin cursos
+// presenciales por el momento."): that modality is unavailable unless it still has an upcoming date.
+export function findUnavailableCourseModalities(
+  calendarBlocks: IndexedBlock[],
+  now = new Date(),
+  timeZone = DEFAULT_TIME_ZONE,
+): Array<'presencial' | 'en línea'> {
+  const today = getZonedDateParts(now, timeZone)
+  const upcoming = parseScheduledCourseDates(calendarBlocks, today.year).filter((date) => !isCourseDatePast(date, today))
+  const noCourses = /\b(?:sin\s+(?:cursos?|fechas?|clases?)|no\s+(?:hay|se\s+(?:cuenta|tiene|tienen|ofrecen?)|contamos|tenemos|ofrecemos)|ning[uú]n\s+curso|por\s+el\s+momento)\b/i
+  const dateLine = /^\s*(?:[✨*•-]\s*)?\d{1,2}\s+(?:de\s+)?[a-záéíóú]+(?:\s+(?:de\s+)?\d{4})?\s*[-–:]/i
+  const unavailable = new Set<'presencial' | 'en línea'>()
+
+  for (const block of calendarBlocks) {
+    if (!/^\[FECHAS_CURSOS\]/im.test(block.body)) continue
+    let current: 'presencial' | 'en línea' | null = null
+    for (const line of block.body.split(/\r?\n/)) {
+      if (dateLine.test(line)) continue
+      const named = /en\s+l[ií]nea|online/i.test(line) ? 'en línea' : /presencial/i.test(line) ? 'presencial' : null
+      if (named) current = named
+      if (current && noCourses.test(line)) unavailable.add(current)
+    }
+  }
+  return Array.from(unavailable).filter((modality) => !upcoming.some((date) => date.modality === modality))
 }
 
 function isCourseDatePast(date: ScheduledCourseDate, today: { year: number; month: number; day: number }) {
@@ -1088,9 +1125,11 @@ export function buildCourseListReply(
     const dates = upcoming.filter((date) => date.modality === modality)
     return dates.length ? `${title}\n${dates.map((date) => `- ${formatDate(date)}: ${date.courseName}`).join('\n')}` : ''
   }
+  const unavailable = findUnavailableCourseModalities(blocks, now, timeZone)
   const sections = [
     section('Cursos en línea (fechas tentativas):', 'en línea'),
-    section('Cursos presenciales:', 'presencial'),
+    section('Cursos presenciales:', 'presencial') ||
+      (unavailable.includes('presencial') ? 'Cursos presenciales:\nPor el momento no hay cursos presenciales.' : ''),
     section('Otros cursos con fecha:', 'programada'),
   ].filter(Boolean)
 
