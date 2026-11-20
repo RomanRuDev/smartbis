@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createSearchIndex } from './searchIndex.js'
-import { applyUpcomingCourseDateCorrection, buildAskedCourseDatesBlock, findAskedCourseDates, getUpcomingCourseDates } from './dbChat.js'
+import { applyUpcomingCourseDateCorrection, buildAskedCourseDatesBlock, buildDbDocumentsContextBlock, findAskedCourseDates, generateDbAgentAnswer, getUpcomingCourseDates } from './dbChat.js'
 
 // The calendar as the business writes it: no year, "✨", leading zeros
 const calendar = `[FECHAS_CURSOS]
@@ -73,6 +73,108 @@ test('a calendar course without a card of its own name is marked as such', () =>
   assert.equal(block.match(/sin ficha \[CURSO\] con este nombre/g)?.length, 2)
   const withCard = buildAskedCourseDatesBlock(dates, ['Eliminación de verrugas y manchas con Plasma Pen.'])
   assert.doesNotMatch(withCard, /sin ficha/)
+})
+
+test('a calendar name links the unique card contained in it, without confusing superior and inferior', () => {
+  const content = `[FECHAS_CURSOS]
+En línea:
+24 Noviembre - Rejuvenecimiento facial en tercio inferior (Aplicación de toxina botulínica en tercio inferior)
+
+[CURSO]
+Nombre del curso: Toxina Botulínica: Tercio inferior.
+Descripción: Curso inferior.
+Precio: $895 MXN ($48 USD)
+
+[CURSO]
+Nombre del curso: Toxina Botulínica: Tercio superior.
+Descripción: Curso superior.
+Precio: $500 MXN`
+  const index = createSearchIndex({
+    tenantId: 'referral-course',
+    documents: [{ id: 'courses', title: 'cursos.md', docType: 'cursos', section: 'cursos', isActive: true, updatedAt: '2026-01-01T00:00:00Z', content }],
+  })
+  const question = 'Más información Rejuvenecimiento facial tercio inferior'
+  const result = buildDbDocumentsContextBlock(index, question, false, now)
+  assert.match(result.contextBlock, /ficha correspondiente: Toxina Botulínica: Tercio inferior/)
+  assert.match(result.contextBlock, /Descripción: Curso inferior/)
+  assert.match(result.contextBlock, /24 de noviembre de 2026 \(en línea\)/)
+  assert.doesNotMatch(result.contextBlock, /sin ficha \[CURSO\] con este nombre/)
+  assert.ok(result.matchedBlocks.some((block) => block.fields.name === 'Toxina Botulínica: Tercio inferior.'))
+  assert.deepEqual(findAskedCourseDates('Más información curso rejuvenecimiento facial tercio superior', index.blocks, now, zone).matches, [])
+  assert.doesNotMatch(
+    applyUpcomingCourseDateCorrection('El curso de tercio superior no tiene fecha programada.', 'curso rejuvenecimiento facial tercio superior', index.blocks, now, zone),
+    /24 de noviembre/,
+  )
+})
+
+test('a similar card is not linked when multiple cards match or a distinctive word differs', () => {
+  const dates = findAskedCourseDates('curso de verrugas y manchas', blocks, now, zone)
+  const ambiguous = buildAskedCourseDatesBlock(dates, [
+    'Verrugas y manchas con Plasma Pen',
+    'Eliminación de verrugas y manchas con Plasma Pen',
+  ])
+  assert.doesNotMatch(ambiguous, /ficha correspondiente:/)
+  const different = buildAskedCourseDatesBlock(dates, ['Eliminación de verrugas y manchas con Fibroblast'])
+  assert.doesNotMatch(different, /ficha correspondiente:/)
+})
+
+test('ad trigger and a brief follow-up deliver the calendar and linked card to the model and judge', async () => {
+  const keys = ['SUPABASE_URL', 'SUPABASE_SECRET_KEY', 'SUPABASE_PUBLISHABLE_KEY', 'LLM_API_KEY', 'LLM_BASE_URL'] as const
+  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]))
+  process.env.SUPABASE_URL = 'https://supabase.test'
+  process.env.SUPABASE_SECRET_KEY = 'test-secret'
+  process.env.SUPABASE_PUBLISHABLE_KEY = 'test-anon'
+  process.env.LLM_API_KEY = 'test-llm'
+  process.env.LLM_BASE_URL = 'https://model.test'
+  const originalFetch = globalThis.fetch
+  const requests: string[] = []
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input))
+    if (url.hostname === 'supabase.test') {
+      return Response.json([{
+        id: 'courses', tenant_id: 'ad-course-test', title: 'cursos.md', doc_type: 'markdown', is_active: true,
+        updated_at: '2026-01-01T00:00:00Z',
+        content_markdown: `[FECHAS_CURSOS]
+En línea:
+24 Noviembre 2099 - Rejuvenecimiento facial en tercio inferior (Aplicación de toxina botulínica en tercio inferior)
+
+[CURSO]
+Nombre del curso: Toxina Botulínica: Tercio inferior.
+Descripción: Técnica para tercio inferior.
+Precio: Online: $895 MXN ($48 USD)
+
+[CURSO]
+Nombre del curso: Toxina Botulínica: Tercio superior.
+Descripción: Técnica para tercio superior.
+Precio: Online: $500 MXN`,
+      }])
+    }
+    assert.equal(url.hostname, 'model.test')
+    const body = JSON.parse(String(init?.body))
+    requests.push(body.messages.map((message: { content: string }) => message.content).join('\n'))
+    const answer = requests.length % 2 === 1
+      ? 'El curso de Toxina Botulínica: Tercio inferior cuesta $895 MXN y es en línea el 24 de noviembre de 2099.'
+      : JSON.stringify({ category: 'correct', reason: 'Respaldado por los documentos.' })
+    return Response.json({ choices: [{ message: { content: answer }, finish_reason: 'stop' }] })
+  }
+  try {
+    const referralContext = 'El cliente llegó desde este anuncio: ID de anuncio 123 · anuncio CURSO DE REJUVENECIMIENTO FACIAL TERCIO INFERIOR'
+    for (const message of ['Más información Rejuvenecimiento facial tercio inferior', 'precio']) {
+      const start = requests.length
+      await generateDbAgentAnswer({ tenantId: 'ad-course-test', prompt: '', message, history: [], referralContext })
+      assert.equal(requests.length, start + 2)
+      assert.match(requests[start], /ficha correspondiente: Toxina Botulínica: Tercio inferior/)
+      assert.match(requests[start], /Técnica para tercio inferior/)
+      assert.match(requests[start + 1], /Técnica para tercio inferior/)
+      assert.match(requests[start + 1], /ficha correspondiente: Toxina Botulínica: Tercio inferior/)
+    }
+  } finally {
+    globalThis.fetch = originalFetch
+    for (const key of keys) {
+      if (previous[key] === undefined) delete process.env[key]
+      else process.env[key] = previous[key]
+    }
+  }
 })
 
 test('an answer that already gives the right dates is left as written', () => {

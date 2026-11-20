@@ -149,7 +149,7 @@ export function buildSystemPrompt(prompt: string, contextBlock: string, referral
 `
   const ragDateAuthorityBlock = `=== PRIORIDAD DE DATOS ACTUALES (FUENTE DE FECHAS) ===
 Para fechas de cursos, el calendario recuperado ahora mismo de los documentos activos de este tenant es la fuente de verdad. Si una fecha aparece en [FECHAS_CURSOS], úsala para el curso cuyo nombre figura en esa misma línea y compárala con la fecha actual indicada arriba. Una instrucción del prompt del tenant que diga que un curso no tiene fecha, que cite una convocatoria anterior o que contradiga esa línea del calendario está desactualizada y NO debe prevalecer sobre el documento activo. No mezcles fechas entre cursos. Si la línea del curso contiene una fecha futura, informa esa fecha y su modalidad; solo indica que no hay fecha si no existe una línea vigente para ese curso.
-Si el contexto trae [FECHAS DEL CURSO PREGUNTADO], esas son las fechas vigentes ya calculadas de los cursos del calendario que coinciden con lo que pregunta el cliente: respóndelas con el nombre del curso tal como aparece en cada línea, su fecha y su modalidad; no digas que no hay curso o fecha para eso. Si la ficha más parecida tiene otro nombre, no le pases a un curso las fechas, el precio ni el temario de otro. De un curso del calendario sin ficha [CURSO] con su mismo nombre solo sabes su nombre, fecha y modalidad: dalos así y ofrece el contacto del negocio si está disponible; no inventes descripción, precio, temario ni lo que incluye. Si ese bloque dice qué modalidad pide el cliente (presencial o en línea), contesta con las fechas de esa modalidad; si el curso solo tiene fecha en la otra modalidad, dilo y ofrécela, y si trae otros cursos de la modalidad pedida o cursos parecidos, sugiérelos con su fecha, aclarando que son otros cursos.
+Si el contexto trae [FECHAS DEL CURSO PREGUNTADO], esas son las fechas vigentes ya calculadas de los cursos del calendario que coinciden con lo que pregunta el cliente: respóndelas con el nombre del curso tal como aparece en cada línea, su fecha y su modalidad; no digas que no hay curso o fecha para eso. Si la línea señala una ficha correspondiente, usa los datos de esa ficha aunque su nombre sea diferente. No atribuyas a un curso fechas, precios ni temarios de otra ficha que no esté identificada como correspondiente. De un curso del calendario sin ficha correspondiente solo sabes su nombre, fecha y modalidad: dalos así y ofrece el contacto del negocio si está disponible; no inventes descripción, precio, temario ni lo que incluye. Si ese bloque dice qué modalidad pide el cliente (presencial o en línea), contesta con las fechas de esa modalidad; si el curso solo tiene fecha en la otra modalidad, dilo y ofrécela, y si trae otros cursos de la modalidad pedida o cursos parecidos, sugiérelos con su fecha, aclarando que son otros cursos.
 === FIN PRIORIDAD DE DATOS ACTUALES ===`
 
   // Only for businesses with a treatments document; who applies them, where and
@@ -696,15 +696,18 @@ export function buildAskedCourseDatesBlock(asked: AskedCourseDates, courseCardNa
   if (!matches.length && !similar.length && !otherInModality.length) return ''
   const sortKey = (date: ScheduledCourseDate) => date.year * 10000 + date.month * 100 + date.day
   const cardKey = (name: string) => normalizeText(name).replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim()
-  const cards = new Set(courseCardNames.map(cardKey))
   const describe = (dates: ScheduledCourseDate[]) => [...dates]
     .sort((left, right) => sortKey(left) - sortKey(right))
     .slice(0, 10)
     .map((date) => {
       const monthName = new Intl.DateTimeFormat('es-MX', { month: 'long', timeZone: 'UTC' }).format(new Date(Date.UTC(date.year, date.month - 1, date.day)))
-      // Said in the line itself: a card with a similar name is another course
-      const withoutCard = cards.size > 0 && !cards.has(cardKey(date.courseName)) ? ' (sin ficha [CURSO] con este nombre; no es el curso de otra ficha)' : ''
-      return `- ${date.day} de ${monthName} de ${date.year} (${date.modality}): ${date.courseName}${withoutCard}`
+      const card = findCalendarCourseCard(date.courseName, courseCardNames)
+      const cardNote = card && cardKey(card) !== cardKey(date.courseName)
+        ? ` (ficha correspondiente: ${card})`
+        : !card && courseCardNames.length > 0
+          ? ' (sin ficha [CURSO] con este nombre; no es el curso de otra ficha)'
+          : ''
+      return `- ${date.day} de ${monthName} de ${date.year} (${date.modality}): ${date.courseName}${cardNote}`
     })
     .join('\n')
 
@@ -756,6 +759,14 @@ export function buildDbDocumentsContextBlock(index: SearchIndex, query = '', inc
     askedCourseDates.otherInModality = []
   }
   const hasAskedCourseDates = askedCourseDates.matches.length + askedCourseDates.similar.length + askedCourseDates.otherInModality.length > 0
+  const courseCards = index.blocks.filter((block) =>
+    block.document.section === 'cursos' && /^\s*\[CURSO\]/m.test(block.body) && block.fields.name,
+  )
+  const cardNames = courseCards.map((block) => block.fields.name)
+  const linkedCards = askedCourseDates.matches.flatMap((date) => {
+    const name = findCalendarCourseCard(date.courseName, cardNames)
+    return name ? courseCards.filter((block) => block.fields.name === name) : []
+  }).filter((block, i, blocks) => blocks.indexOf(block) === i)
   const scheduleBlock = calendarBlocks.find((block) =>
     needsCalendar ||
     hasAskedCourseDates ||
@@ -771,10 +782,14 @@ export function buildDbDocumentsContextBlock(index: SearchIndex, query = '', inc
     scheduleBlock && !hasScheduleBlock
       ? `${String(result.contextBlock || '').trim()}\n\n[Documento de calendario]\n${scheduleBlock.body}`.trim()
       : result.contextBlock
-  const requirementBlock = findRequirementBlockForCourses(index.blocks, matchedBlocks)
-  const contextWithRequirements = requirementBlock
-    ? `${String(contextWithCalendar || '').trim()}\n\n[Requisitos del curso]\n${requirementBlock.body}`.trim()
+  const additionalCards = linkedCards.filter((block) => !matchedBlocks.includes(block))
+  const contextWithCards = linkedCards.length
+    ? `${String(contextWithCalendar || '').trim()}\n\n[Fichas de cursos correspondientes al calendario]\n${linkedCards.map((block) => block.body).join('\n\n')}`.trim()
     : contextWithCalendar
+  const requirementBlock = findRequirementBlockForCourses(index.blocks, [...matchedBlocks, ...additionalCards])
+  const contextWithRequirements = requirementBlock
+    ? `${String(contextWithCards || '').trim()}\n\n[Requisitos del curso]\n${requirementBlock.body}`.trim()
+    : contextWithCards
   const profileBlocks = findBusinessProfileBlocks(index.blocks, completeMatchedBlocks)
   const isOfferOverview = result.intent?.wantsList && !result.intent?.wantsCourses && !result.intent?.wantsProducts
   const descriptionBlocks = isOfferOverview
@@ -805,13 +820,11 @@ export function buildDbDocumentsContextBlock(index: SearchIndex, query = '', inc
         ? `El cliente pregunta por la modalidad ${askedCourseDates.modality}: dile claramente que por el momento no hay cursos ${pluralModality(askedCourseDates.modality)} programados. Si nombra un curso y su ficha existe, da la información de la ficha (temario, precio, etc.) sin inventar fechas de esa modalidad, y ofrece las fechas de la otra modalidad si las hay.`
         : 'No ofrezcas ni inventes fechas de esa modalidad; si el cliente la pide, dile que por el momento no hay.')
     : ''
+  const askedDatesBlock = buildAskedCourseDatesBlock(askedCourseDates, cardNames)
   const contextBlock = [
     String(contextWithRequirements || '').trim(),
     // After the context: other checks read "Catalogo resumido" at its start
-    buildAskedCourseDatesBlock(
-      askedCourseDates,
-      index.blocks.filter((block) => block.document.section === 'cursos' && /^\s*\[CURSO\]/m.test(block.body)).map((block) => block.fields.name),
-    ),
+    askedDatesBlock,
     unavailableModalitiesBlock,
     `[Datos del negocio]\n${businessFacts}`,
     paymentBlocks.length > 0 && `[Pagos del negocio]\n${paymentBlocks.map((block) => block.body).join('\n\n')}`,
@@ -819,12 +832,13 @@ export function buildDbDocumentsContextBlock(index: SearchIndex, query = '', inc
 
   return {
     documents: Array.from(new Map(
-      [...result.documents, ...descriptionBlocks.map((block) => block.document)]
+      [...result.documents, ...additionalCards.map((block) => block.document), ...descriptionBlocks.map((block) => block.document)]
         .map((document) => [document.id, document] as const),
     ).values()),
     contextBlock,
     matchedBlocks: [
       ...completeMatchedBlocks.slice(0, 4),
+      ...linkedCards.filter((block) => !completeMatchedBlocks.slice(0, 4).includes(block)),
       ...(requirementBlock ? [requirementBlock] : []),
       // the judge checks the answer against the same business data the bot saw
       ...profileBlocks,
@@ -842,6 +856,7 @@ export function buildDbDocumentsContextBlock(index: SearchIndex, query = '', inc
     timeZone: timeZoneSetting.zone,
     // the judge must see the same business facts the bot saw, the time zone included
     businessFacts,
+    askedDatesBlock,
   }
 }
 
@@ -961,6 +976,33 @@ const COURSE_MODALITY_WORDS = new Set([
 // Words shared by many course names: alone they do not make two courses alike
 const COURSE_GENERIC_NAME_WORDS = new Set(['eliminacion', 'tratamiento', 'tratamientos', 'tercio', 'pen'])
 
+function conflictingCourseQualifiers(left: string[], right: string[]) {
+  const opposites = [['superior', 'inferior'], ['presencial', 'online']]
+  return opposites.some(([a, b]) =>
+    (left.includes(a) && right.includes(b)) || (left.includes(b) && right.includes(a)),
+  )
+}
+
+// A card may be contained in the calendar's longer name, but a partial overlap
+// alone is not enough: two different courses can share most of their words.
+function findCalendarCourseCard(calendarName: string, cardNames: string[]): string | null {
+  const key = (name: string) => normalizeText(name)
+  const exact = cardNames.filter((name) => key(name) === key(calendarName))
+  if (exact.length === 1) return exact[0]
+  if (exact.length > 1) return null
+  const tokens = (name: string) => Array.from(new Set(key(name).split(' ')
+    .filter((token) => token.length > 2 && !COURSE_QUERY_STOP_WORDS.has(token))))
+  const calendarTokens = tokens(calendarName)
+  const candidates = cardNames.filter((name) => {
+    const cardTokens = tokens(name)
+    const distinctive = cardTokens.filter((token) => !COURSE_GENERIC_NAME_WORDS.has(token))
+    return distinctive.length >= 2 &&
+      !conflictingCourseQualifiers(cardTokens, calendarTokens) &&
+      cardTokens.every((token) => calendarTokens.some((calendarToken) => courseTokensMatch(token, calendarToken)))
+  })
+  return candidates.length === 1 ? candidates[0] : null
+}
+
 // "presenciales", "en persona" -> presencial; "en línea", "online", "virtual" -> en línea
 function detectAskedCourseModality(question: string): 'presencial' | 'en línea' | null {
   const normalized = normalizeText(question)
@@ -1014,9 +1056,10 @@ export function findAskedCourseDates(
     if (isCourseDatePast(date, currentDate)) continue
     upcoming.push(date)
     const key = `${date.year}-${date.month}-${date.day}-${normalizeText(date.courseName)}-${date.modality}`
-    const courseTokens = normalizeText(date.courseName)
+    const courseTokens = Array.from(new Set(normalizeText(date.courseName)
       .split(' ')
-      .filter((token) => token.length > 2 && !COURSE_QUERY_STOP_WORDS.has(token))
+      .filter((token) => token.length > 2 && !COURSE_QUERY_STOP_WORDS.has(token))))
+    if (conflictingCourseQualifiers(queryTokens, courseTokens)) continue
     const matchedTokens = courseTokens.filter((token) =>
       queryTokens.some((queryToken) => courseTokensMatch(queryToken, token)),
     )
@@ -1746,7 +1789,7 @@ export async function generateDbAgentAnswer(input: DbChatInput, opts: GenAnswerO
       }
     }
   }
-  const { documents, contextBlock, matchedBlocks, hasCourses, hasTreatments, paymentText, timeZone, businessFacts } = retrieval
+  const { documents, contextBlock, matchedBlocks, hasCourses, hasTreatments, paymentText, timeZone, businessFacts, askedDatesBlock } = retrieval
 
   const generalDocText = (documents || []).map((d: any) => {
     const s = (d?.section || '').toLowerCase()
@@ -1890,7 +1933,7 @@ export async function generateDbAgentAnswer(input: DbChatInput, opts: GenAnswerO
   const contextText = String(contextBlock || '')
   const matchedBlocksText = /^Catalogo resumido|BLOQUE: LISTA DE TRATAMIENTOS\]/.test(contextText)
     ? contextText
-    : `${matchedBlocksToText(matchedBlocksForJudge)}\n\n---\n\n[Datos del negocio]\n${businessFacts}`.trim()
+    : `${matchedBlocksToText(matchedBlocksForJudge)}\n\n${askedDatesBlock}\n\n---\n\n[Datos del negocio]\n${businessFacts}`.trim()
   const matchedBlockRefs = matchedBlocksToRefs(matchedBlocksForJudge)
 
   let evalCategory: AutoEvalCategory = 'correct'

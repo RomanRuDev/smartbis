@@ -394,27 +394,6 @@ export default function CrmChatsView(props: CrmChatsViewProps) {
       {/* Header controles: barra herramientas 3X + botones + TABS Conversaciones / Auto-curado */}
       <header className="flex items-center justify-between gap-2.5 border-b border-[#1a3a5a] bg-[#0f3151] px-5 py-2.5">
         <div className="flex items-center gap-1.5">
-          <button
-            type="button"
-            title="Herramienta 1 (próximamente)"
-            className="flex h-8 w-8 items-center justify-center rounded-lg border border-transparent text-slate-400 transition hover:border-[#1a3a5a] hover:bg-[#123659]/60 hover:text-slate-100"
-          >
-            <X className="h-4 w-4" />
-          </button>
-          <button
-            type="button"
-            title="Herramienta 2 (próximamente)"
-            className="flex h-8 w-8 items-center justify-center rounded-lg border border-transparent text-slate-400 transition hover:border-[#1a3a5a] hover:bg-[#123659]/60 hover:text-slate-100"
-          >
-            <X className="h-4 w-4" />
-          </button>
-          <button
-            type="button"
-            title="Herramienta 3 (próximamente)"
-            className="flex h-8 w-8 items-center justify-center rounded-lg border border-transparent text-slate-400 transition hover:border-[#1a3a5a] hover:bg-[#123659]/60 hover:text-slate-100"
-          >
-            <X className="h-4 w-4" />
-          </button>
           {/* ===== TABS MODO VISTA ===== */}
           <div className="ml-3 flex items-center gap-1 rounded-full border border-[#1a3a5a] bg-[#0c2a47] p-1">
             <button
