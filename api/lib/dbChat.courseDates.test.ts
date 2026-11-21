@@ -53,6 +53,46 @@ test('dates that already passed are left out', () => {
   ])
 })
 
+test('a broad course question prioritizes the nearest matching course in the requested modality', () => {
+  const content = `[FECHAS_CURSOS]
+En línea:
+24 Noviembre - Toxina botulínica inferior
+20 Noviembre - Toxina botulínica superior
+10 Noviembre - Botox anterior
+Presencial:
+22 Noviembre - Botox cuello
+
+[CURSO]
+Nombre del curso: Toxina botulínica inferior
+Descripción: Información inferior
+
+[CURSO]
+Nombre del curso: Toxina botulínica superior
+Descripción: Información superior
+
+[CURSO]
+Nombre del curso: Botox cuello
+Descripción: Información cuello`
+  const index = createSearchIndex({
+    tenantId: 'earliest',
+    documents: [{ id: 'courses', title: 'cursos.md', docType: 'cursos', section: 'cursos', isActive: true, updatedAt: '2026-01-01T00:00:00Z', content }],
+  })
+  const today = new Date('2026-11-17T18:00:00Z')
+  const result = buildDbDocumentsContextBlock(index, '¿Tienen curso de Botox?', false, today)
+  assert.match(result.priorityCourseBlock, /prioriza la ficha y los detalles de Toxina botulínica superior/)
+  assert.match(result.askedDatesBlock, /20 de noviembre de 2026 \(en línea\): Toxina botulínica superior/)
+  assert.match(result.askedDatesBlock, /22 de noviembre de 2026 \(presencial\): Botox cuello/)
+  assert.match(result.askedDatesBlock, /24 de noviembre de 2026 \(en línea\): Toxina botulínica inferior/)
+  assert.doesNotMatch(result.askedDatesBlock, /Botox anterior/)
+  const online = buildDbDocumentsContextBlock(index, 'curso online de Botox', false, today)
+  assert.match(online.priorityCourseBlock, /detalles de Toxina botulínica superior/)
+  const inPerson = buildDbDocumentsContextBlock(index, 'curso presencial de Botox', false, today)
+  assert.equal(inPerson.priorityCourseBlock, '')
+  assert.match(inPerson.askedDatesBlock, /22 de noviembre de 2026 \(presencial\): Botox cuello/)
+  const specific = buildDbDocumentsContextBlock(index, 'curso toxina botulínica inferior online', false, today)
+  assert.equal(specific.priorityCourseBlock, '')
+})
+
 test('other courses do not match', () => {
   assert.deepEqual(describe('curso de glúteos'), ['2026-12-16 en línea Aumento de glúteos con Peptonas'])
   assert.deepEqual(describe('tienes cursos de verrugas y manchas?').filter((line) => /Dermapen|labios/.test(line)), [])
@@ -190,6 +230,59 @@ test('an answer that already gives the right dates is left as written', () => {
   assert.equal(applyUpcomingCourseDateCorrection(answer, 'tienes cursos de verrugas y manchas?', blocks, now, zone), answer)
 })
 
+test('adding a missing date does not erase a numbered course with an already stated date and details', () => {
+  const answer = [
+    'Tenemos dos cursos:',
+    '',
+    '**1. Eliminación de verrugas y manchas con Plasma Pen**',
+    'Fecha: 9 de diciembre de 2026 (en línea)',
+    'Precio: $595 MXN. Incluye práctica.',
+    '',
+    '**2. Eliminación de verrugas y manchas con plasma Pen**',
+    'Modalidad presencial. Incluye materiales.',
+    '',
+    '¿Te interesa alguno?',
+  ].join('\n')
+  const result = applyUpcomingCourseDateCorrection(answer, 'tienes cursos de verrugas y manchas?', blocks, now, zone)
+  assert.match(result, /\*\*1\. Eliminación de verrugas y manchas con Plasma Pen\*\*/)
+  assert.match(result, /Fecha: 9 de diciembre de 2026 \(en línea\)/)
+  assert.match(result, /Precio: \$595 MXN\. Incluye práctica\./)
+  assert.match(result, /\*\*2\. Eliminación de verrugas y manchas con plasma Pen\*\*/)
+  assert.match(result, /Modalidad presencial\. Incluye materiales\./)
+  assert.match(result, /12 de noviembre de 2026 \(presencial\)/)
+  assert.equal((result.match(/9 de diciembre de 2026/g) || []).length, 1)
+})
+
+test('a broad Botox answer preserves both numbered courses when a date is added', () => {
+  const content = `[FECHAS_CURSOS]
+En línea:
+20 Noviembre - Toxina botulínica tercio superior
+24 Noviembre - Rejuvenecimiento facial tercio inferior (Botox inferior)`
+  const index = createSearchIndex({
+    tenantId: 'numbered-botox',
+    documents: [{ id: 'courses', title: 'cursos.md', docType: 'cursos', section: 'cursos', isActive: true, updatedAt: '2026-01-01T00:00:00Z', content }],
+  })
+  const answer = [
+    'Tenemos dos cursos:',
+    '**1. Toxina botulínica tercio superior**',
+    'Fecha: 20 de noviembre de 2026 (en línea). Precio: $895 MXN.',
+    '**2. Rejuvenecimiento facial tercio inferior (Botox inferior)**',
+    'Precio: $895 MXN. Incluye constancia.',
+  ].join('\n')
+  const result = applyUpcomingCourseDateCorrection(answer, 'curso de botox', index.blocks, now, zone)
+  assert.ok(result.includes(answer))
+  assert.match(result, /24 de noviembre de 2026 \(en línea\)/)
+  assert.equal((result.match(/20 de noviembre de 2026/g) || []).length, 1)
+})
+
+test('a missing online date does not remove a truthful unavailable in-person notice', () => {
+  const answer = 'El curso de Eliminación de verrugas y manchas con Plasma Pen incluye práctica.\nNo hay fecha presencial programada.'
+  const result = applyUpcomingCourseDateCorrection(answer, 'curso de verrugas online', blocks, now, zone)
+  assert.match(result, /incluye práctica/)
+  assert.match(result, /No hay fecha presencial programada/)
+  assert.match(result, /9 de diciembre de 2026 \(en línea\)/)
+})
+
 test('an answer about a differently named card that says there is no date gets the calendar dates', () => {
   const answer = 'Tenemos el curso Eliminación de verrugas y manchas con Fibroblast. En este momento no hay una fecha programada para este curso.'
   const corrected = applyUpcomingCourseDateCorrection(answer, 'tienes cursos de verrugas y manchas?', blocks, now, zone)
@@ -217,7 +310,7 @@ test('the modality asked for does not hide the course and picks its dates', () =
   const block = buildAskedCourseDatesBlock(findAskedCourseDates('tienes cursos presenciales de verrugas y manchas?', blocks, now, zone))
   assert.match(block, /modalidad presencial/)
   assert.match(block, /coinciden con la pregunta:\n- 12 de noviembre de 2026 \(presencial\)/)
-  assert.match(block, /otra modalidad:\n- 9 de diciembre de 2026 \(en línea\)/)
+  assert.match(block, /otra modalidad[^\n]*:\n- 9 de diciembre de 2026 \(en línea\)/)
 })
 
 test('a course without a date in the asked modality offers the other one and that modality\'s courses', () => {
