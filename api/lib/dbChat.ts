@@ -1,4 +1,4 @@
-import { keepDocumentWords, namesKnownTopic, normalizeText, searchIndex, type IndexedBlock, type SearchIndex } from './searchIndex.js'
+import { correctQueryTypos, keepDocumentWords, namesKnownTopic, normalizeText, searchIndex, type IndexedBlock, type SearchIndex } from './searchIndex.js'
 import { getDbTenantSearchIndex } from './dbWorkspace.js'
 import { DEFAULT_TIME_ZONE, describeTimeZone, detectTimeZoneSetting, getZonedDateParts } from './timeZone.js'
 import {
@@ -150,7 +150,8 @@ export function buildSystemPrompt(prompt: string, contextBlock: string, referral
   const ragDateAuthorityBlock = `=== PRIORIDAD DE DATOS ACTUALES (FUENTE DE FECHAS) ===
 Para fechas de cursos, el calendario recuperado ahora mismo de los documentos activos de este tenant es la fuente de verdad. Si una fecha aparece en [FECHAS_CURSOS], úsala para el curso cuyo nombre figura en esa misma línea y compárala con la fecha actual indicada arriba. Una instrucción del prompt del tenant que diga que un curso no tiene fecha, que cite una convocatoria anterior o que contradiga esa línea del calendario está desactualizada y NO debe prevalecer sobre el documento activo. No mezcles fechas entre cursos. Si la línea del curso contiene una fecha futura, informa esa fecha y su modalidad; solo indica que no hay fecha si no existe una línea vigente para ese curso.
 Si el contexto trae [FECHAS DEL CURSO PREGUNTADO], esas son las fechas vigentes ya calculadas de los cursos del calendario que coinciden con lo que pregunta el cliente: respóndelas con el nombre del curso tal como aparece en cada línea, su fecha y su modalidad; no digas que no hay curso o fecha para eso. Si la línea señala una ficha correspondiente, usa los datos de esa ficha aunque su nombre sea diferente. No atribuyas a un curso fechas, precios ni temarios de otra ficha que no esté identificada como correspondiente. De un curso del calendario sin ficha correspondiente solo sabes su nombre, fecha y modalidad: dalos así y ofrece el contacto del negocio si está disponible; no inventes descripción, precio, temario ni lo que incluye. Si ese bloque dice qué modalidad pide el cliente (presencial o en línea), contesta con las fechas de esa modalidad; si el curso solo tiene fecha en la otra modalidad, dilo y ofrécela, y si trae otros cursos de la modalidad pedida o cursos parecidos, sugiérelos con su fecha, aclarando que son otros cursos.
-Una modalidad sin fecha vigente para el curso no se ofrece como disponible ni se indica su precio o beneficios, incluso si el cliente los pide. Si pregunta por esa modalidad, aclara que no hay fecha vigente; si el calendario dice explícitamente que no hay cursos de esa modalidad, aclara que no hay cursos disponibles por el momento. La falta de una fecha no demuestra por sí sola que la modalidad no se imparta.
+Una modalidad sin fecha vigente para el curso no se ofrece como disponible. En una consulta general, menciona precios y beneficios solo de las modalidades con fecha vigente para ese curso. Si el cliente pregunta explícitamente por información de una modalidad sin fecha, primero aclara que no hay fecha vigente y luego responde con los datos documentados que solicite, sin presentarla como disponible; si el calendario dice que no hay cursos de esa modalidad, acláralo. Si el curso no tiene fecha vigente en ninguna modalidad, empieza indicando que no hay fechas disponibles. La falta de una fecha no demuestra por sí sola que la modalidad no se imparta.
+Si el cliente pregunta por el horario y aparece [HORARIO DEL CURSO PREGUNTADO], responde con ese horario, además de los demás datos que haya solicitado. No inventes un horario ni lo tomes de otro curso.
 === FIN PRIORIDAD DE DATOS ACTUALES ===`
 
   // Only for businesses with a treatments document; who applies them, where and
@@ -173,7 +174,7 @@ ${ragDateAuthorityBlock}${treatmentsAuthorityBlock}
 REGLA DE ATENCIÓN AL CLIENTE: responde como una persona del equipo, de forma cálida, directa y natural. No reveles ni insinúes que eres una IA, bot, modelo o sistema.
 El giro, los servicios y los productos deben provenir de los documentos activos de este negocio. No infieras que vende productos, ofrece tratamientos o pertenece a un sector específico solo porque se mencionen en instrucciones, ejemplos o conversaciones anteriores. Si el historial o el prompt contradicen los documentos actuales sobre el negocio, prevalecen los documentos.
 Si el precio de un curso o de una modalidad del curso en los documentos es cero, di que es gratis o gratuito, sin escribir su costo numérico. Indica que es virtual, online o en línea solo si los documentos lo dicen. Si otra modalidad tiene precio distinto, no la presentes como gratuita y conserva su precio cuando sea relevante. No apliques esta regla a productos.
-El nombre del negocio, su WhatsApp, su teléfono y su zona horaria son los del bloque [Datos del negocio] de la información disponible; nunca uses otro nombre, número ni zona. Si preguntan la zona horaria o en qué hora están los horarios, responde con la de ese bloque.
+El nombre del negocio, su WhatsApp, su teléfono y su zona horaria son los del bloque [Datos del negocio] de la información disponible; nunca uses otro nombre ni número. Si un horario documentado especifica su zona horaria, conserva esa zona; de lo contrario, usa la del bloque [Datos del negocio] cuando pregunten por ella.
 Si el mensaje tiene varias preguntas y solo algunas tienen respuesta en la información disponible, responde esas y omite las demás; [NO_RESPONDER] es solo para cuando no puedes responder ninguna parte.
 Si preguntan por algo con una condición que puedes comprobar en la información, responde la conclusión respaldada y ofrece la opción más cercana; nunca inventes precios.
 Si piden un curso con un nombre que no coincide exacto con ninguna ficha, pero hay un curso relacionado, responde con la información de ese curso aclarando su nombre; no uses [NO_RESPONDER] por eso.
@@ -431,7 +432,9 @@ Excepción para [SEGUIMIENTO DE CURSO]: si el cliente pide el contenido o la des
 Para el giro, los servicios y los productos del negocio, los documentos actuales prevalecen sobre el historial y sobre afirmaciones contradictorias del prompt. Clasifica como error una respuesta que atribuya al negocio una actividad no respaldada por esos documentos.
 Un curso o modalidad con precio cero en los documentos es gratis; expresarlo como "gratis" o "gratuito" está respaldado. No consideres gratuitas otras modalidades con precio positivo.
 
-Cuando [MODALIDADES SIN CURSOS] o [DISPONIBILIDAD DEL CURSO] indique que una modalidad no tiene cursos o fecha vigente, es un error ofrecerla o dar su precio o beneficios, aun si el cliente los solicita. Es correcto aclarar que no hay cursos disponibles o fecha vigente, según corresponda. No deduzcas que una modalidad no se imparte solo porque falte una fecha.
+Cuando [MODALIDADES SIN CURSOS] o [DISPONIBILIDAD DEL CURSO] indique que una modalidad no tiene cursos o fecha vigente, es un error ofrecerla como disponible o mencionar su precio o beneficios en una consulta general. Si el cliente pregunta explícitamente por información de esa modalidad, es correcto dar los datos documentados solicitados después de aclarar que no hay cursos disponibles o fecha vigente, según corresponda. Si el curso no tiene fecha vigente en ninguna modalidad, la respuesta debe empezar aclarando que no hay fechas disponibles. No deduzcas que una modalidad no se imparte solo porque falte una fecha.
+Si se pregunta por el horario y hay [HORARIO DEL CURSO PREGUNTADO], es error omitirlo o cambiarlo, aunque la respuesta incluya otros datos correctos.
+Si hay [ALTERNATIVA DEL MISMO CURSO], es error omitir la alternativa vigente al responder que la modalidad solicitada no tiene fecha.
 
 REGLA DE FUENTE AUTORIZADA PARA PAGOS: las reglas explícitas del prompt del tenant sobre inscripción, ubicación, modalidad, métodos de pago, PayPal, Stripe, cuentas y enlaces oficiales son una fuente autorizada de primer nivel. No marques como "error" o "noinfo" una respuesta de pagos solo porque esos datos no aparezcan en matchedBlocks, siempre que la respuesta respete literalmente el bloque autorizado del prompt. Si el prompt contiene un flujo específico para la situación actual, una respuesta de falta de información es incorrecta.
 
@@ -738,7 +741,52 @@ export function buildAskedCourseDatesBlock(asked: AskedCourseDates, courseCardNa
   return sections.join('\n')
 }
 
+export function findAskedCourseSchedule(blocks: IndexedBlock[], query: string) {
+  const normalizedQuery = ` ${normalizeText(query)} `
+  if (!/\bhorarios?\b/.test(normalizedQuery) || /\b(?:productos?|tratamientos?|servicios?)\b/.test(normalizedQuery)) return null
+
+  const cards = blocks.filter((block) =>
+    block.document.section === 'cursos' && /^\s*\[CURSO\]/m.test(block.body) && block.fields.name,
+  )
+  const occurrences = cards.flatMap((card) => {
+    const name = normalizeText(card.fields.name)
+    if (name.length < 4) return []
+    const needle = ` ${name} `
+    const matches: Array<{ card: IndexedBlock; start: number; end: number }> = []
+    let start = normalizedQuery.indexOf(needle)
+    while (start !== -1) {
+      matches.push({ card, start, end: start + needle.length })
+      start = normalizedQuery.indexOf(needle, start + 1)
+    }
+    return matches
+  })
+  const named = cards.filter((card) => occurrences.some((match) => match.card === card &&
+    !occurrences.some((other) => other.card !== card && other.start <= match.start && other.end >= match.end &&
+      other.end - other.start > match.end - match.start)))
+  if (named.length !== 1) return null
+  const card = named[0]
+  const field = /^\s*horario\s*:[ \t]*([^\r\n]+)[ \t]*$/im.exec(card.body)?.[1]?.trim()
+  if (field) return { card, schedule: field, source: card }
+
+  const entries: Array<{ schedule: string; source: IndexedBlock }> = []
+  for (const block of blocks) {
+    if (block.document.section !== 'cursos' || !/^\s*\[HORARIOS\]/im.test(block.body)) continue
+    let schedule = ''
+    for (const line of block.body.split(/\r?\n/)) {
+      const heading = line.trim()
+      if (/^\d{1,2}(?::\d{2})?\s*(?:am|pm)\s*[-–a]\s*\d{1,2}(?::\d{2})?\s*(?:am|pm)\s*$/i.test(heading)) {
+        schedule = heading
+      } else if (schedule && /^\s*[-*•]\s*/.test(line) &&
+        normalizeText(line.replace(/^\s*[-*•]\s*/, '')) === normalizeText(card.fields.name)) {
+        entries.push({ schedule, source: block })
+      }
+    }
+  }
+  return entries.length === 1 ? { card, ...entries[0] } : null
+}
+
 export function buildDbDocumentsContextBlock(index: SearchIndex, query = '', includePayment = false, now = new Date()) {
+  query = correctQueryTypos(index, query)
   const result = searchIndex(index, query) as any
   const matchedBlocks = Array.isArray(result.matchedBlocks) ? result.matchedBlocks : []
   const queryTokens = normalizeText(query)
@@ -823,7 +871,7 @@ export function buildDbDocumentsContextBlock(index: SearchIndex, query = '', inc
   const pluralModality = (modality: string) => (modality === 'presencial' ? 'presenciales' : 'en línea')
   const unavailableModalitiesBlock = unavailableModalities.length
     ? `[MODALIDADES SIN CURSOS]\nSegún el calendario vigente, por el momento no hay cursos ${unavailableModalities.map(pluralModality).join(' ni ')}. ` +
-      'No ofrezcas esas modalidades ni menciones sus precios o beneficios, aunque los soliciten. Si preguntan por ellas, indica que no hay cursos disponibles. No inventes fechas.'
+      'No ofrezcas esas modalidades. En consultas generales no menciones sus precios ni beneficios. Si el cliente pide explícitamente información de una de ellas, primero indica que no hay cursos disponibles y luego proporciona los datos solicitados que estén documentados. No inventes fechas.'
     : ''
   const matchingCourseNames = new Set(askedCourseDates.matches.map((date) => normalizeText(date.courseName)))
   const scheduledModalities = new Set(askedCourseDates.matches.map((date) => date.modality))
@@ -840,18 +888,35 @@ export function buildDbDocumentsContextBlock(index: SearchIndex, query = '', inc
     ? (['presencial', 'en línea'] as const).filter((modality) =>
         !scheduledModalities.has(modality) && !unavailableModalities.includes(modality))
     : []
-  const courseAvailabilityBlock = unscheduledModalities.length
-    ? `[DISPONIBILIDAD DEL CURSO]\nPara ${unscheduledCourseName} no hay fecha vigente en ${unscheduledModalities.join(' ni ')} en el calendario. No ofrezcas esa modalidad ni menciones su precio o beneficios, aunque los soliciten. Si preguntan por esa modalidad, indica que no hay fecha vigente.`
+  const courseModalitiesWithoutDates = unscheduledCourseName && scheduledModalities.size === 0
+    ? ['presencial', 'en línea']
+    : unscheduledModalities
+  const courseAvailabilityBlock = courseModalitiesWithoutDates.length
+    ? `[DISPONIBILIDAD DEL CURSO]\nPara ${unscheduledCourseName} no hay fecha vigente en ${courseModalitiesWithoutDates.join(' ni ')} en el calendario. No ofrezcas esas modalidades ni menciones sus precios o beneficios en consultas generales. Si el cliente pide explícitamente información de una modalidad sin fecha, primero indica que no hay fecha vigente y luego proporciona los datos solicitados que estén documentados.${scheduledModalities.size === 0 ? ' Empieza indicando que el curso no tiene fechas disponibles.' : ''}`
     : ''
   const exactCardRelated = exactAskedCards.length === 1 &&
     (matchingCourseNames.size === 0 || linkedCards.includes(exactAskedCards[0]))
-  const explicitUnavailableReply = askedCourseDates.modality && exactCardRelated && calendarBlocks.length > 0 &&
+  let explicitUnavailableReply = askedCourseDates.modality && exactCardRelated && calendarBlocks.length > 0 &&
     (unavailableModalities.includes(askedCourseDates.modality) ||
       (unscheduledCourseName && unscheduledModalities.includes(askedCourseDates.modality)))
     ? unavailableModalities.includes(askedCourseDates.modality)
       ? `Por el momento no hay cursos ${pluralModality(askedCourseDates.modality)} disponibles.`
       : `Por el momento no hay fecha ${askedCourseDates.modality} vigente para ${exactAskedCards[0].fields.name}.`
     : null
+  const alternativeDates = explicitUnavailableReply
+    ? askedCourseDates.matches.filter((date) =>
+        date.modality !== askedCourseDates.modality &&
+        (date.modality === 'presencial' || date.modality === 'en línea') &&
+        findCalendarCourseCard(date.courseName, cardNames) === exactAskedCards[0].fields.name)
+      .sort((a, b) => a.year - b.year || a.month - b.month || a.day - b.day)
+    : []
+  let alternativeCourseOffer = ''
+  if (explicitUnavailableReply && alternativeDates.length) {
+    const date = alternativeDates[0]
+    const month = new Intl.DateTimeFormat('es-MX', { month: 'long', timeZone: 'UTC' }).format(new Date(Date.UTC(date.year, date.month - 1, date.day)))
+    alternativeCourseOffer = `El curso ${date.courseName} sí está programado ${date.modality} para el ${date.day} de ${month} de ${date.year}. ¿Te interesa esa modalidad?`
+    explicitUnavailableReply += ` Sin embargo, ${alternativeCourseOffer.charAt(0).toLowerCase()}${alternativeCourseOffer.slice(1)}`
+  }
   const eligibleDates = askedCourseDates.matches
     .filter((date) => !askedCourseDates.modality || date.modality === askedCourseDates.modality)
     .sort((a, b) => a.year - b.year || a.month - b.month || a.day - b.day)
@@ -860,6 +925,13 @@ export function buildDbDocumentsContextBlock(index: SearchIndex, query = '', inc
     ? `[CURSO MÁS PRÓXIMO]\nPara esta consulta general prioriza la ficha y los detalles de ${eligibleDates[0].courseName}, que tiene la fecha vigente más próxima. Menciona los demás cursos coincidentes con fecha y modalidad según [FECHAS DEL CURSO PREGUNTADO], sin transferirles datos de otra ficha. No presentes cursos sin fecha como disponibles.`
     : ''
   const askedDatesBlock = buildAskedCourseDatesBlock(askedCourseDates, cardNames)
+  const askedSchedule = findAskedCourseSchedule(index.blocks, query)
+  const askedScheduleBlock = askedSchedule
+    ? `[HORARIO DEL CURSO PREGUNTADO]\nEl horario documentado de ${askedSchedule.card.fields.name} es: ${askedSchedule.schedule}\nSi el cliente pregunta por el horario, responde con este dato. No lo atribuyas a otra modalidad ni agregues una zona horaria que no esté documentada.`
+    : ''
+  const alternativeCourseBlock = alternativeCourseOffer
+    ? `[ALTERNATIVA DEL MISMO CURSO]\nSi la modalidad solicitada no tiene fecha vigente, acláralo y ofrece también esta alternativa documentada: ${alternativeCourseOffer}`
+    : ''
   const contextBlock = [
     String(contextWithRequirements || '').trim(),
     // After the context: other checks read "Catalogo resumido" at its start
@@ -867,6 +939,8 @@ export function buildDbDocumentsContextBlock(index: SearchIndex, query = '', inc
     unavailableModalitiesBlock,
     courseAvailabilityBlock,
     priorityCourseBlock,
+    askedScheduleBlock,
+    alternativeCourseBlock,
     `[Datos del negocio]\n${businessFacts}`,
     paymentBlocks.length > 0 && `[Pagos del negocio]\n${paymentBlocks.map((block) => block.body).join('\n\n')}`,
   ].filter(Boolean).join('\n\n').trim()
@@ -885,6 +959,8 @@ export function buildDbDocumentsContextBlock(index: SearchIndex, query = '', inc
       ...profileBlocks,
       ...descriptionBlocks,
       ...paymentBlocks,
+      ...(askedSchedule ? [askedSchedule.card, askedSchedule.source].filter((block, i, all) =>
+        all.indexOf(block) === i && !completeMatchedBlocks.slice(0, 4).includes(block) && !linkedCards.includes(block)) : []),
     ] as IndexedBlock[],
     // every payment block, also one the search already found
     paymentText: includePayment
@@ -901,7 +977,15 @@ export function buildDbDocumentsContextBlock(index: SearchIndex, query = '', inc
     unavailableModalitiesBlock,
     courseAvailabilityBlock,
     priorityCourseBlock,
+    askedScheduleBlock,
+    askedSchedule,
+    alternativeCourseOffer,
+    alternativeCourseBlock,
+    alternativeDate: alternativeDates[0] || null,
     explicitUnavailableReply,
+    unavailableCourseModalities: unscheduledCourseName
+      ? (['presencial', 'en línea'] as const).filter((modality) => !scheduledModalities.has(modality))
+      : [],
   }
 }
 
@@ -1056,6 +1140,32 @@ function detectAskedCourseModality(question: string): 'presencial' | 'en línea'
   const online = /\ben\s+linea\b|\bonline\b|\bvirtual(?:es)?\b|\ba\s+distancia\b|\bremot[oa]s?\b|\bzoom\b|\ben\s+vivo\b/.test(normalized)
   if (presencial === online) return null
   return presencial ? 'presencial' : 'en línea'
+}
+
+function removeUnrequestedUnscheduledCourseDetails(
+  answer: string,
+  message: string,
+  unavailable: Array<'presencial' | 'en línea'>,
+) {
+  const requested = normalizeText(message)
+  const explicitlyRequested = (modality: 'presencial' | 'en línea') =>
+    modality === 'presencial'
+      ? /\bpresenciale?s?\b|\ben persona\b/.test(requested)
+      : /\ben linea\b|\bonline\b|\bvirtual(?:es)?\b|\ba distancia\b|\bremot[oa]s?\b|\bzoom\b|\ben vivo\b/.test(requested)
+  const paragraphs = answer.split(/\n{2,}/)
+  const kept = paragraphs.filter((paragraph) => {
+    if (paragraph.includes('\n')) return true
+    const modality = detectAskedCourseModality(paragraph)
+    if (!modality || !unavailable.includes(modality) || explicitlyRequested(modality)) return true
+    const normalized = normalizeText(paragraph)
+    return !/^(?:el |la |los |las )?(?:(?:precio|costo|importe|beneficios?|incluye)\s+(?:del? |de la |modalidad )?(?:curso )?(?:presencial|en linea|online|virtual)|(?:presencial|en linea|online|virtual)\s+(?:precio|costo|importe|incluye))\b/.test(normalized)
+  })
+  if (kept.length === paragraphs.length) return answer
+  return kept.some((paragraph) => paragraph.trim())
+    ? kept.join('\n\n')
+    : unavailable.length === 1
+      ? 'Por el momento no hay fecha vigente para esa modalidad.'
+      : 'Por el momento no hay fechas vigentes para esas modalidades.'
 }
 
 export type AskedCourseDates = {
@@ -1708,6 +1818,72 @@ export function findPreviousTopicQuestion(index: SearchIndex, history: DbConvers
   return earlierQuestions.find((message) => namesKnownTopic(index, message.content))?.content.trim() || null
 }
 
+type ContextTopic = { kind: 'selected'; card: IndexedBlock } | { kind: 'clarify'; cards: IndexedBlock[] }
+
+function namedCatalogSection(text: string): 'cursos' | 'productos' | undefined {
+  const query = normalizeText(text)
+  const course = /\b(?:cursos?|clases?)\b/.test(query)
+  const product = /\bproductos?\b/.test(query)
+  return course === product ? undefined : course ? 'cursos' : 'productos'
+}
+
+function namedCatalogCards(index: SearchIndex, text: string, section?: 'cursos' | 'productos') {
+  const query = ` ${correctQueryTypos(index, text)} `
+  const matches = index.blocks.flatMap((card) => {
+    if (!card.fields.name || (card.document.section !== 'cursos' && card.document.section !== 'productos') ||
+      (section && card.document.section !== section)) return []
+    const name = normalizeText(card.fields.name)
+    if (name.length < 4) return []
+    const needle = ` ${name} `
+    const occurrences: Array<{ card: IndexedBlock; start: number; end: number }> = []
+    for (let start = query.indexOf(needle); start !== -1; start = query.indexOf(needle, start + 1)) {
+      occurrences.push({ card, start, end: start + needle.length })
+    }
+    return occurrences
+  })
+  return index.blocks.filter((card) => matches.some((match) => match.card === card &&
+    !matches.some((other) => other.card !== card && other.start <= match.start && other.end >= match.end &&
+      other.end - other.start > match.end - match.start)))
+}
+
+function isContextualDetailQuestion(index: SearchIndex, message: string) {
+  const query = correctQueryTypos(index, message)
+  if (!/\b(?:horarios?|precio|precios|costo|cuesta|cuanto|fecha|fechas|cuando|incluye|contenido|descripcion|temario|temas|trata|dura|duracion|disponible|existencia|stock)\b/.test(query)) return false
+  if (namedCatalogCards(index, message).length) return false
+  const words = query.split(' ').filter(Boolean)
+  const generic = new Set([
+    'y', 'de', 'del', 'la', 'el', 'las', 'los', 'un', 'una', 'que', 'cual', 'cuales', 'es', 'son',
+    'tiene', 'tienen', 'tendria', 'me', 'puedes', 'podrias', 'decir', 'dime', 'saber', 'quisiera',
+    'quiero', 'favor', 'por', 'para', 'ese', 'esa', 'este', 'esta', 'su', 'sus', 'lo', 'en',
+    'curso', 'cursos', 'clase', 'producto', 'productos', 'horario', 'horarios', 'precio', 'precios',
+    'costo', 'cuesta', 'cuanto', 'fecha', 'fechas', 'cuando', 'incluye', 'contenido', 'descripcion',
+    'temario', 'temas', 'trata', 'dura', 'duracion', 'disponible', 'existencia', 'stock',
+    'online', 'linea', 'presencial', 'virtual', 'modalidad', 'hay', 'si', 'todavia', 'disponibilidad',
+  ])
+  return words.every((word) => generic.has(word))
+}
+
+export function resolveConversationTopic(index: SearchIndex, message: string, history: DbConversationMessage[], referralContext = ''): ContextTopic | null {
+  if (!isContextualDetailQuestion(index, message)) return null
+  const section = namedCatalogSection(correctQueryTypos(index, message))
+  const classify = (cards: IndexedBlock[]): ContextTopic | null =>
+    cards.length === 1 ? { kind: 'selected', card: cards[0] } : cards.length > 1 ? { kind: 'clarify', cards } : null
+  const recent = (history || []).slice(-20)
+  for (const item of [...recent].reverse()) {
+    if (item.role !== 'user') continue
+    const matches = namedCatalogCards(index, item.content, namedCatalogSection(correctQueryTypos(index, item.content)))
+    if (matches.length) return classify(section ? matches.filter((card) => card.document.section === section) : matches)
+    if (/\b(?:curso|producto)\s+(?:de|del)\s+\S+/i.test(normalizeText(item.content)) &&
+      !isContextualDetailQuestion(index, item.content)) return null
+  }
+  const adKind = /\b(?:anuncio|referencia)\s+(curso|producto)\b/i.exec(referralContext)?.[1]
+  const adSection = adKind ? namedCatalogSection(adKind) : namedCatalogSection(adSearchText(referralContext))
+  const advertised = classify(namedCatalogCards(index, adSearchText(referralContext), section || adSection))
+  if (advertised) return advertised
+  const lastAssistant = [...recent].reverse().find((item) => item.role === 'assistant' && item.content.trim())
+  return lastAssistant ? classify(namedCatalogCards(index, lastAssistant.content, section)) : null
+}
+
 type CourseDetailsFollowUp =
   | { kind: 'selected'; card: IndexedBlock }
   | { kind: 'clarify'; names: string[] }
@@ -1726,7 +1902,7 @@ export function resolveCourseDetailsFollowUp(index: SearchIndex, message: string
   )
   const includesName = (text: string, name: string) => {
     const normalizedName = normalizeText(name)
-    return normalizedName.length >= 4 && (` ${normalizeText(text)} `).includes(` ${normalizedName} `)
+    return normalizedName.length >= 4 && (` ${correctQueryTypos(index, text)} `).includes(` ${normalizedName} `)
   }
   if (cards.some((card) => includesName(message, card.fields.name))) return null
   const lastAssistant = [...history].reverse().find((item) => item.role === 'assistant' && item.content.trim())
@@ -1874,11 +2050,22 @@ export async function generateDbAgentAnswer(input: DbChatInput, opts: GenAnswerO
 
   const index = await getDbTenantSearchIndex(input.tenantId)
   const includePayment = isPaymentConversation(input.message, input.history || [])
-  const courseFollowUp = resolveCourseDetailsFollowUp(index, input.message, input.history || [])
+  const contextTopic = resolveConversationTopic(index, input.message, input.history || [], input.referralContext || '')
+  const namedCards = namedCatalogCards(index, input.message, namedCatalogSection(correctQueryTypos(index, input.message)))
+  const correctedNamedCard = namedCards.length === 1 &&
+    !(` ${normalizeText(input.message)} `).includes(` ${normalizeText(namedCards[0].fields.name)} `)
+    ? namedCards[0]
+    : null
+  const originalCourseFollowUp = resolveCourseDetailsFollowUp(index, input.message, input.history || [])
+  const courseFollowUp = originalCourseFollowUp && contextTopic?.kind === 'selected' && contextTopic.card.document.section === 'cursos'
+    ? { kind: 'selected' as const, card: contextTopic.card }
+    : originalCourseFollowUp
   const messageNamesTopic = namesKnownTopic(index, input.message)
   // A message that names nothing ("¿precio?") is about the previous question or,
   // for a customer who came from an ad, about what the ad showed
-  const previousTopicQuestion = messageNamesTopic
+  const previousTopicQuestion = contextTopic?.kind === 'selected'
+    ? `${contextTopic.card.document.section === 'cursos' ? 'curso' : 'producto'} ${contextTopic.card.fields.name}`
+    : messageNamesTopic
     ? null
     : findPreviousTopicQuestion(index, input.history || []) || keepDocumentWords(index, adSearchText(input.referralContext || '')) || null
   let retrievalQuery = courseFollowUp?.kind === 'selected'
@@ -1901,6 +2088,13 @@ export async function generateDbAgentAnswer(input: DbChatInput, opts: GenAnswerO
   const courseFollowUpBlock = courseFollowUp?.kind === 'selected'
     ? `[SEGUIMIENTO DE CURSO]\nEl cliente pregunta por ${courseFollowUp.card.fields.name}. Responde con la descripción o temas de esta ficha y solo un temario que identifique claramente ese mismo curso. No atribuyas información de otro curso. Si no hay temario detallado, comparte la descripción disponible sin inventar temas. Si no existe descripción ni temario, explica que no cuentas con ese detalle y ofrece consultar a un asesor por el WhatsApp del negocio solo si está documentado; si no está, ofrece consultar a un asesor sin inventar contacto.\n${courseFollowUp.card.body}`
     : ''
+  const currentTopicCard = contextTopic?.kind === 'selected' ? contextTopic.card : correctedNamedCard
+  const contextTopicBlock = currentTopicCard
+    ? `[TEMA ACTUAL DE LA CONVERSACIÓN]\nLa pregunta actual se refiere a ${currentTopicCard.document.section === 'cursos' ? 'el curso' : 'el producto'} ${currentTopicCard.fields.name}, identificado por el nombre escrito, la conversación o el anuncio. Responde usando su ficha, sin atribuirle datos de otro artículo.`
+    : ''
+  if (contextTopicBlock) {
+    retrieval = { ...retrieval, contextBlock: `${retrieval.contextBlock}\n\n${contextTopicBlock}` }
+  }
   if (courseFollowUp?.kind === 'selected') {
     const card = courseFollowUp.card
     retrieval = {
@@ -1912,7 +2106,7 @@ export async function generateDbAgentAnswer(input: DbChatInput, opts: GenAnswerO
         : [...retrieval.documents, card.document],
     }
   }
-  const { documents, contextBlock, matchedBlocks, hasCourses, hasTreatments, paymentText, timeZone, businessFacts, askedDatesBlock, unavailableModalitiesBlock, courseAvailabilityBlock, priorityCourseBlock, explicitUnavailableReply } = retrieval
+  const { documents, contextBlock, matchedBlocks, hasCourses, hasTreatments, paymentText, timeZone, businessFacts, askedDatesBlock, unavailableModalitiesBlock, courseAvailabilityBlock, priorityCourseBlock, explicitUnavailableReply, unavailableCourseModalities, askedScheduleBlock, askedSchedule, alternativeCourseOffer, alternativeCourseBlock, alternativeDate } = retrieval
 
   const generalDocText = (documents || []).map((d: any) => {
     const s = (d?.section || '').toLowerCase()
@@ -1956,14 +2150,25 @@ export async function generateDbAgentAnswer(input: DbChatInput, opts: GenAnswerO
       buildEnrollmentInterestReply(input.message, input.history || [])
   // These two never reach the model: the list comes from the dated schedule and the
   // bare "más información" only asks what the customer is looking for
-  const followUpClarification = courseFollowUp?.kind === 'clarify'
+  const followUpClarification = contextTopic?.kind === 'clarify'
+    ? `¿Te refieres a ${contextTopic.cards.map((card) => card.fields.name.replace(/[.\s]+$/, '')).join(' o ')}?`
+    : courseFollowUp?.kind === 'clarify'
     ? courseFollowUp.names.length > 1
       ? `¿Te refieres al curso ${courseFollowUp.names.join(' o ')}?`
       : '¿De qué curso te gustaría conocer los temas o la descripción?'
     : null
+  const scheduleOnlyReply = askedSchedule && /\bhorarios?\b/i.test(input.message) && !isPaymentConversation(input.message, []) &&
+    !/\b(?:fecha|fechas|cu[aá]ndo|precio|costo|cuesta|cu[aá]nto|incluye|beneficios?|informaci[oó]n|detalles|requisitos?|contenido|temario|duraci[oó]n|dura|ubicaci[oó]n|direcci[oó]n|d[oó]nde)\b/i.test(input.message)
+    ? [
+        explicitUnavailableReply || (/Empieza indicando que el curso no tiene fechas disponibles/.test(courseAvailabilityBlock)
+          ? `Por el momento no hay fechas disponibles para ${askedSchedule.card.fields.name}.`
+          : ''),
+        `El horario del curso ${askedSchedule.card.fields.name.replace(/[.\s]+$/, '')} es ${askedSchedule.schedule}`,
+      ].filter(Boolean).join('\n\n')
+    : null
   const fixedReply = enrollmentReply
     ? null
-    : followUpClarification || (detectAskedCourseModality(input.message) ? explicitUnavailableReply : null) || (previousTopicQuestion ? null : buildBareMoreInfoReply(input.message, input.prompt || '')) ||
+    : followUpClarification || scheduleOnlyReply || (detectAskedCourseModality(input.message) && !/\b(?:horarios?|precio|costo|cu[aá]nto|incluye|beneficios?|informaci[oó]n|detalles|requisitos?|contenido|temario)\b/i.test(input.message) ? explicitUnavailableReply : null) || (previousTopicQuestion ? null : buildBareMoreInfoReply(input.message, input.prompt || '')) ||
       buildCourseListReply(input.message, input.prompt || '', index.blocks, new Date(), timeZone)
   const completion = enrollmentReply
     ? {
@@ -2004,12 +2209,35 @@ export async function generateDbAgentAnswer(input: DbChatInput, opts: GenAnswerO
     .replace(/\n{3,}/g, '\n\n')
     .trim()
 
+  if (!includePayment && !fixedReply && !enrollmentReply) {
+    answer = removeUnrequestedUnscheduledCourseDetails(answer, input.message, unavailableCourseModalities)
+  }
+
   answer = formatFreeCourseAnswer(
     answer,
     matchedBlocks.some((block: IndexedBlock) => block.document.section === 'cursos' && hasFreeCoursePrice(block.fields.price)),
     matchedBlocks.some((block: IndexedBlock) => block.document.section === 'productos' || /tratamiento/i.test(block.document.title)) ||
       /\b(?:productos?|tratamientos?)\b/i.test(answer),
   )
+
+  if (alternativeDate && alternativeCourseOffer && !fixedReply && !enrollmentReply &&
+    answer && !NOT_UNDERSTOOD_MARKER.test(answer) && !NO_ANSWER_MARKER.test(answer)) {
+    const month = new Intl.DateTimeFormat('es-MX', { month: 'long', timeZone: 'UTC' }).format(new Date(Date.UTC(alternativeDate.year, alternativeDate.month - 1, alternativeDate.day)))
+    const normalizedAnswer = normalizeText(answer)
+    const hasAlternative = normalizedAnswer.includes(normalizeText(alternativeDate.courseName)) &&
+      (alternativeDate.modality === 'en línea' ? /\b(?:online|en linea|virtual)\b/.test(normalizedAnswer) : /\bpresencial\b/.test(normalizedAnswer)) &&
+      new RegExp(`\\b${alternativeDate.day}\\s+(?:de\\s+)?${normalizeText(month)}(?:\\s+(?:de\\s+)?${alternativeDate.year})?\\b`).test(normalizedAnswer)
+    if (!hasAlternative) answer = `${answer}\n\n${alternativeCourseOffer}`
+  }
+
+  if (askedSchedule && /\bhorarios?\b/i.test(input.message) && !fixedReply && !enrollmentReply &&
+    answer && !NOT_UNDERSTOOD_MARKER.test(answer) && !NO_ANSWER_MARKER.test(answer) &&
+    !normalizeText(answer).includes(normalizeText(askedSchedule.schedule))) {
+    const scheduleSentence = `El horario del curso ${askedSchedule.card.fields.name.replace(/[.\s]+$/, '')} es ${askedSchedule.schedule}`
+    answer = explicitUnavailableReply || /Empieza indicando que el curso no tiene fechas disponibles/.test(courseAvailabilityBlock)
+      ? `${answer}\n\n${scheduleSentence}`
+      : `${scheduleSentence}\n\n${answer}`
+  }
 
   if (!answer) {
     // Respuesta vacía del modelo → fallback educado multi-tenant (sin menciones a IA/modelos)
@@ -2043,6 +2271,19 @@ export async function generateDbAgentAnswer(input: DbChatInput, opts: GenAnswerO
         category: 'correct',
         reason: 'Seguimiento de curso: se usa la descripción documentada o se ofrece consultar a un asesor.',
       }
+    } else if (correctedNamedCard?.document.section === 'cursos' &&
+      /(?:^|\n)\s*descripci[oó]n\s*:\s*[^\r\n]+/i.test(correctedNamedCard.body) &&
+      !/\b(?:horarios?|precio|costo|cu[aá]nto|fecha|cu[aá]ndo|incluye|requisitos?|temario|contenido|duraci[oó]n|dura|ubicaci[oó]n|d[oó]nde)\b/i.test(input.message)) {
+      answer = [
+        /Empieza indicando que el curso no tiene fechas disponibles/.test(courseAvailabilityBlock)
+          ? `Por el momento no hay fechas disponibles para ${correctedNamedCard.fields.name.replace(/[.\s]+$/, '')}.`
+          : '',
+        buildCourseDetailsFallback(correctedNamedCard, []),
+      ].filter(Boolean).join('\n\n')
+      markerEval = {
+        category: 'correct',
+        reason: 'Se identificó el curso con una corrección inequívoca y se usa su descripción documentada.',
+      }
     } else {
       answer = '[NO_RESPONDER]'
       markerEval = {
@@ -2069,8 +2310,8 @@ export async function generateDbAgentAnswer(input: DbChatInput, opts: GenAnswerO
   // blocks: the judge checks the answer against the same text the bot saw
   const contextText = String(contextBlock || '')
   const matchedBlocksText = /^Catalogo resumido|BLOQUE: LISTA DE TRATAMIENTOS\]/.test(contextText)
-    ? contextText
-    : `${matchedBlocksToText(matchedBlocksForJudge)}\n\n${askedDatesBlock}\n\n${unavailableModalitiesBlock}\n\n${courseAvailabilityBlock}\n\n${priorityCourseBlock}\n\n${courseFollowUpBlock}\n\n---\n\n[Datos del negocio]\n${businessFacts}`.trim()
+    ? `${contextText}\n\n${askedScheduleBlock}\n\n${alternativeCourseBlock}\n\n${contextTopicBlock}`
+    : `${matchedBlocksToText(matchedBlocksForJudge)}\n\n${askedDatesBlock}\n\n${unavailableModalitiesBlock}\n\n${courseAvailabilityBlock}\n\n${priorityCourseBlock}\n\n${askedScheduleBlock}\n\n${alternativeCourseBlock}\n\n${courseFollowUpBlock}\n\n${contextTopicBlock}\n\n---\n\n[Datos del negocio]\n${businessFacts}`.trim()
   const matchedBlockRefs = matchedBlocksToRefs(matchedBlocksForJudge)
 
   let evalCategory: AutoEvalCategory = 'correct'

@@ -664,6 +664,10 @@ function detectBlockKind(block: string, fields: Record<string, string>, section:
   const normalizedBlock = normalizeText(block)
   const normalizedTitle = normalizeText(fields.name || extractBlockTitle(block))
 
+  if (fields.name && section === 'cursos') {
+    return 'catalog_item'
+  }
+
   if (
     /\bubicacion\b|\bdireccion\b|\bmaps\b|\bmapa\b|\btelefono\b|\bcontacto\b/.test(
       normalizedBlock,
@@ -1228,27 +1232,33 @@ function isDocumentTypo(token: string, counts: Map<string, number>) {
 function correctWord(word: string, vocabulary: TypoVocabulary) {
   if (word.length < 3 || /\d/.test(word) || vocabulary.known.has(word)) return word
 
-  // Item names: one edit, long words only (peptomas -> peptonas)
+  // Item names: allow two edits for long names only when the closest match is unique.
   // Question words: one edit, or two in longer words (tiness -> tienes);
   // 3-letter words only gain a missing letter (cra -> cara)
   // Places: one edit, or two in long names (hermosiyo -> hermosillo)
   const candidates: Array<{ token: string; maxEdits: number }> = [
-    ...(word.length >= 5 ? vocabulary.names.map((token) => ({ token, maxEdits: 1 })) : []),
+    ...(word.length >= 5 ? vocabulary.names.map((token) => ({ token, maxEdits: word.length >= 8 && token.length >= 8 ? 2 : 1 })) : []),
     ...(word.length >= 5 ? vocabulary.places.map((token) => ({ token, maxEdits: word.length >= 8 ? 2 : 1 })) : []),
     ...QUESTION_VOCABULARY
       .filter((token) => word.length > 3 || token.length === word.length + 1)
       .map((token) => ({ token, maxEdits: word.length >= 6 ? 2 : 1 })),
   ]
   let best: { token: string; distance: number } | null = null
+  let ambiguous = false
   for (const { token, maxEdits } of candidates) {
     const distance = typoDistance(word, token, maxEdits)
-    if (distance <= maxEdits && (!best || distance < best.distance)) best = { token, distance }
+    if (distance <= maxEdits && (!best || distance < best.distance)) {
+      best = { token, distance }
+      ambiguous = false
+    } else if (best && distance <= maxEdits && distance === best.distance && distance === 2 && token !== best.token) {
+      ambiguous = true
+    }
   }
-  return best?.token || word
+  return ambiguous ? word : best?.token || word
 }
 
 // Corrige errores de dedo usando las palabras de los documentos y de las preguntas
-function correctQueryTypos(index: SearchIndex, query: string) {
+export function correctQueryTypos(index: SearchIndex, query: string) {
   const vocabulary = getTypoVocabulary(index)
   return normalizeText(query)
     .split(' ')
