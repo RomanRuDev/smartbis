@@ -31,7 +31,7 @@ jobs:
             # Las imágenes instalan dependencias y compilan el frontend dentro de Docker
             # (Dockerfile.web, etapa builder), así que no se usa node_modules del servidor.
             # Se construye primero: si falla, los contenedores actuales siguen funcionando.
-            docker compose build --no-cache
+            docker compose build
 
             # Reemplaza los contenedores por los nuevos (solo hay corte durante el reinicio)
             docker compose up -d --remove-orphans
