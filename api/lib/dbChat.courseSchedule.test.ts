@@ -104,6 +104,73 @@ Nombre del curso: Peptonas y Lipoenzimas.` }] })
   assert.equal(both.explicitUnavailableReply, null)
 })
 
+test('general course information includes the schedule from its card without adding one to price-only questions', async () => {
+  const keys = ['SUPABASE_URL', 'SUPABASE_SECRET_KEY', 'SUPABASE_PUBLISHABLE_KEY', 'LLM_API_KEY', 'LLM_BASE_URL'] as const
+  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]))
+  process.env.SUPABASE_URL = 'https://supabase.test'
+  process.env.SUPABASE_SECRET_KEY = 'test-secret'
+  process.env.SUPABASE_PUBLISHABLE_KEY = 'test-anon'
+  process.env.LLM_API_KEY = 'test-llm'
+  process.env.LLM_BASE_URL = 'https://model.test'
+  const tenantId = `general-schedule-${randomUUID()}`
+  const storePath = path.resolve(process.cwd(), 'clientsdata', '_meta_store', `pos_${tenantId}.json`)
+  const originalFetch = globalThis.fetch
+  const requests: string[] = []
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input))
+    if (url.hostname === 'supabase.test') return Response.json([{
+      id: 'courses', tenant_id: tenantId, title: 'cursos.md', doc_type: 'markdown', is_active: true,
+      updated_at: document.updatedAt, content_markdown: content.replace('1:00 pm a 5:00 pm (Hora local de Hermosillo, Sonora)', '01:00pm a 5:00 pm'),
+    }])
+    assert.equal(url.hostname, 'model.test')
+    const body = JSON.parse(String(init?.body))
+    requests.push(body.messages.map((message: { content: string }) => message.content).join('\n'))
+    const answers = [
+      'El curso Lipoenzimas enseña aplicación de enzimas. El precio online es $595 MXN. ¿Te gustaría inscribirte?',
+      JSON.stringify({ category: 'correct', reason: 'Información documentada.' }),
+      'Microrellenos cuesta $500 MXN.',
+      JSON.stringify({ category: 'correct', reason: 'Precio documentado.' }),
+      'Lipoenzimas cuesta $595 MXN online.',
+      JSON.stringify({ category: 'correct', reason: 'Precio documentado.' }),
+      'Lipoenzimas enseña aplicación de enzimas.',
+      JSON.stringify({ category: 'correct', reason: 'Información documentada.' }),
+    ]
+    const answer = answers[requests.length - 1]
+    assert.ok(answer)
+    return Response.json({ choices: [{ message: { content: answer }, finish_reason: 'stop' }] })
+  }
+  try {
+    const info = await generateDbAgentAnswer({
+      tenantId, prompt: '', message: 'Más información del curso Lipoenzimas', history: [],
+    })
+    assert.match(info.answer, /01:00pm a 5:00 pm/)
+    assert.match(info.answer, /\$595 MXN/)
+    assert.match(requests[0], /\[HORARIO DEL CURSO PREGUNTADO\]/)
+    assert.match(requests[1], /01:00pm a 5:00 pm/)
+    assert.equal(info.autoEval.blocked, false)
+    const missing = await generateDbAgentAnswer({
+      tenantId, prompt: '', message: 'información del curso Microrellenos', history: [],
+    })
+    assert.doesNotMatch(missing.answer, /horario|01:00pm/)
+    const price = await generateDbAgentAnswer({
+      tenantId, prompt: '', message: 'precio del curso Lipoenzimas online', history: [],
+    })
+    assert.doesNotMatch(price.answer, /horario|01:00pm/)
+    const ad = await generateDbAgentAnswer({
+      tenantId, prompt: '', message: 'información del curso', history: [],
+      referralContext: 'Anuncio: ID de anuncio 123 · anuncio Curso Lipoenzimas',
+    })
+    assert.match(ad.answer, /01:00pm a 5:00 pm/)
+  } finally {
+    globalThis.fetch = originalFetch
+    for (const key of keys) {
+      if (previous[key] === undefined) delete process.env[key]
+      else process.env[key] = previous[key]
+    }
+    if (fs.existsSync(storePath)) fs.unlinkSync(storePath)
+  }
+})
+
 test('schedule-only responses use the documented time even when a modality has no dates', async () => {
   const keys = ['SUPABASE_URL', 'SUPABASE_SECRET_KEY', 'SUPABASE_PUBLISHABLE_KEY', 'LLM_API_KEY', 'LLM_BASE_URL'] as const
   const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]))
