@@ -390,6 +390,9 @@ const AD_CONTEXT = 'El cliente llegó desde este anuncio. Usa su ID y título pa
 test('only the ad title reaches the search, never the instructions for the model', () => {
   assert.equal(adSearchText(AD_CONTEXT), 'Producto AH Revofil')
   assert.equal(adSearchText(`${AD_CONTEXT} · referencia promo-octubre`), 'Producto AH Revofil promo-octubre')
+  const withColonInTitle = adSearchText('El cliente llegó desde este anuncio: ID de anuncio 123 · anuncio ‼️CURSO MESOBOTOX🤩 TE INCLUIMOS: ✅Constancia de participación.')
+  assert.match(withColonInTitle, /CURSO\s+MESOBOTOX/i)
+  assert.match(withColonInTitle, /TE INCLUIMOS:/i)
   assert.equal(adSearchText(''), '')
 })
 
