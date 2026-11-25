@@ -71,6 +71,10 @@ test('follow-ups use the most recent named item or ad without crossing a topic c
   const advertised = resolveConversationTopic(index, 'que horario tiene el curso', [], ad)
   assert.equal(advertised?.kind, 'selected')
   if (advertised?.kind === 'selected') assert.match(advertised.card.fields.name, /Mesobotox/)
+  const adWithColon = 'El cliente llegó desde este anuncio: ID de anuncio 123 · anuncio ‼️CURSO MESOBOTOX🤩 TE INCLUIMOS: ✅Constancia de participación.'
+  const typoInfo = resolveConversationTopic(index, 'Mas informaicon del curso', [], adWithColon)
+  assert.equal(typoInfo?.kind, 'selected')
+  if (typoInfo?.kind === 'selected') assert.match(typoInfo.card.fields.name, /Mesobotox/)
   const multiple = resolveConversationTopic(index, 'cuanto cuesta', [
     { role: 'user', content: 'Revofil y Peptonas' },
   ])

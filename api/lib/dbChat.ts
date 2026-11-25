@@ -172,6 +172,7 @@ Además de cursos y productos, el negocio ofrece TRATAMIENTOS que se aplican dir
 ${ragDateAuthorityBlock}${treatmentsAuthorityBlock}
 
 REGLA DE ATENCIÓN AL CLIENTE: responde como una persona del equipo, de forma cálida, directa y natural. No reveles ni insinúes que eres una IA, bot, modelo o sistema.
+Los datos bancarios para transferencias o depósitos provienen exclusivamente de [DATOS_BANCARIOS_PUBLICOS] del documento infogeneral activo. Nunca uses cuentas, titulares o tarjetas del prompt, otros documentos o el historial. No restrinjas esos datos por ubicación.
 El giro, los servicios y los productos deben provenir de los documentos activos de este negocio. No infieras que vende productos, ofrece tratamientos o pertenece a un sector específico solo porque se mencionen en instrucciones, ejemplos o conversaciones anteriores. Si el historial o el prompt contradicen los documentos actuales sobre el negocio, prevalecen los documentos.
 Si el precio de un curso o de una modalidad del curso en los documentos es cero, di que es gratis o gratuito, sin escribir su costo numérico. Indica que es virtual, online o en línea solo si los documentos lo dicen. Si otra modalidad tiene precio distinto, no la presentes como gratuita y conserva su precio cuando sea relevante. No apliques esta regla a productos.
 El nombre del negocio, su WhatsApp, su teléfono y su zona horaria son los del bloque [Datos del negocio] de la información disponible; nunca uses otro nombre ni número. Si un horario documentado especifica su zona horaria, conserva esa zona; de lo contrario, usa la del bloque [Datos del negocio] cuando pregunten por ella.
@@ -436,7 +437,7 @@ Cuando [MODALIDADES SIN CURSOS] o [DISPONIBILIDAD DEL CURSO] indique que una mod
 Si se pregunta por el horario o por información general de un curso específico y hay [HORARIO DEL CURSO PREGUNTADO], es error omitirlo o cambiarlo, aunque la respuesta incluya otros datos correctos.
 Si hay [ALTERNATIVA DEL MISMO CURSO], es error omitir la alternativa vigente al responder que la modalidad solicitada no tiene fecha.
 
-REGLA DE FUENTE AUTORIZADA PARA PAGOS: las reglas explícitas del prompt del tenant sobre inscripción, ubicación, modalidad, métodos de pago, PayPal, Stripe, cuentas y enlaces oficiales son una fuente autorizada de primer nivel. No marques como "error" o "noinfo" una respuesta de pagos solo porque esos datos no aparezcan en matchedBlocks, siempre que la respuesta respete literalmente el bloque autorizado del prompt. Si el prompt contiene un flujo específico para la situación actual, una respuesta de falta de información es incorrecta.
+REGLA DE FUENTE AUTORIZADA PARA PAGOS: los datos bancarios solo pueden proceder de [DATOS_BANCARIOS_PUBLICOS] del infogeneral activo, nunca del prompt ni del historial. Las reglas del prompt pueden autorizar otros métodos y enlaces de pago.
 
 INSTRUCCIONES DE SALIDA (OBLIGATORIO, SIN TEXTO EXTRA):
 Responde ÚNICAMENTE con un bloque JSON que tenga esta estructura y NADA MÁS:
@@ -694,6 +695,60 @@ export function isPaymentConversation(userMessage: string, history: DbConversati
     lastAssistant &&
     /pago|inscrip|ciudad\s+o\s+pa[ií]s|desde\s+qu[eé]\s+(?:ciudad|pa[ií]s)|modalidad\s+(?:online|presencial)/i.test(lastAssistant.content),
   )
+}
+
+type BankingSource = { document: SearchIndex['documents'][number]; content: string }
+
+export function findBankingSource(index: SearchIndex): BankingSource | null {
+  const documents = index.documents.filter((document) =>
+    document.isActive && /^infogeneral(?:\.md)?$/i.test(document.title.trim()),
+  )
+  if (documents.length !== 1) return null
+
+  const content = documents[0].content.replace(/\r\n?/g, '\n')
+  const sections = Array.from(content.matchAll(/^\s*\[DATOS_BANCARIOS_PUBLICOS\][ \t]*$/gim))
+  if (sections.length !== 1) return null
+  const start = sections[0].index! + sections[0][0].length
+  const remainder = content.slice(start)
+  const nextHeading = remainder.search(/^[ \t]*\[[^\]\r\n]+\][ \t]*$/m)
+  const body = (nextHeading < 0 ? remainder : remainder.slice(0, nextHeading)).trim()
+  const hasAccount = body.split('\n').some((line) =>
+    /\b(?:clabe|cuenta|tarjeta|n[uú]mero|numero|referencia)\b/i.test(line) &&
+    (line.match(/\d/g)?.length || 0) >= 8,
+  )
+  return hasAccount ? { document: documents[0], content: body } : null
+}
+
+export function isBankingQuestion(message: string, history: DbConversationMessage[]): boolean {
+  const text = normalizeText(message)
+  const banking = /\b(?:clabe|spei|bancari[oa]s?|transferencia|transferir|transferencias|deposito|depositar|depositos|oxxo|cuenta|cuentas|iban|swift)\b/
+  const request = /\b(?:como|donde|adonde|cual|cuales|que|datos|numero|nombre|titular|pasame|enviame|darme|compart|quiero|necesito|puedo|puede|pagar|pago|paga|aceptan|hacen|tienen)\b/
+  if (/\b(?:ya pague|ya hice|comprobante|ya transferi|ya deposite)\b/.test(text) && !request.test(text)) return false
+  if (banking.test(text) && (request.test(text) || text.split(' ').length <= 4)) return true
+  if (/\b(?:donde|adonde|a donde|como)\s+(?:puedo\s+|debo\s+|se\s+)?(?:pagar|pago|paga)\b/.test(text)) return true
+  const lastAssistant = [...history].reverse().find((item) => item.role === 'assistant')
+  return Boolean(lastAssistant && banking.test(normalizeText(lastAssistant.content)) &&
+    /\b(?:titular|nombre|clabe|numero|cuenta|banco|cual|cuales|datos)\b/.test(text) &&
+    !/\b(?:ya pague|ya hice|comprobante|ya transferi|ya deposite)\b/.test(text))
+}
+
+export function containsBankingDetails(answer: string): boolean {
+  const withoutUrls = answer.replace(/https?:\/\/\S+/gi, '')
+  const withoutContacts = withoutUrls.replace(
+    /(?:whatsapp|tel[eé]fono|celular|\btel\b|contacto)[^\d\n]{0,20}\+?\d[\d\s().-]{6,}\d/gi,
+    '',
+  )
+  const hasLongNumber = Array.from(withoutContacts.matchAll(/\d[\d .()-]{6,}\d/g))
+    .some((match) => (match[0].match(/\d/g)?.length || 0) >= 8)
+  return hasLongNumber || /\b(?:titular|beneficiario)\s*(?::|es\b)/i.test(withoutUrls) ||
+    /\bcuenta\s+(?:est[aá]\s+)?(?:a nombre de|es de)\b/i.test(withoutUrls) ||
+    /\b(?:clabe|cuenta bancaria|datos bancarios|n[uú]mero de (?:cuenta|tarjeta))\s*:/i.test(withoutUrls)
+}
+
+function bankingReply(source: BankingSource | null): string {
+  return source
+    ? `Estos son los datos para transferencia o depósito:\n\n${source.content}\n\nUna vez realizado el pago, envía el comprobante (captura o foto) por WhatsApp al número oficial +52 1 662 335 8779. Allí te confirmaremos la inscripción y te proporcionaremos los datos de acceso al curso (enlace de la plataforma online y cualquier información adicional). También puedes llamar al (662) 212-0623 si prefieres confirmar por teléfono. ¡Gracias!`
+    : 'Por el momento no contamos con datos bancarios disponibles. Un asesor puede ayudarte a confirmarlos.'
 }
 
 // The calendar lines of the courses the question names, with their full date already
@@ -1893,7 +1948,7 @@ export function findContradictoryFreeCoursePrice(answer: string, index: SearchIn
 
 function isContextualDetailQuestion(index: SearchIndex, message: string) {
   const query = correctQueryTypos(index, message)
-  if (!/\b(?:horarios?|informacion|informes|info|detalles?|ficha|precio|precios|costo|cuesta|cuanto|fecha|fechas|cuando|incluye|contenido|descripcion|temario|temas|trata|dura|duracion|disponible|existencia|stock)\b/.test(query)) return false
+  if (!/\b(?:horarios?|informaci(?:on|ones?|o[nm]|[a-z]{2,})|informes|info|detalles?|ficha|precio|precios|costo|cuesta|cuanto|fecha|fechas|cuando|incluye|contenido|descripcion|temario|temas|trata|dura|duracion|disponible|existencia|stock)\b/.test(query)) return false
   if (namedCatalogCards(index, message).length) return false
   const words = query.split(' ').filter(Boolean)
   const generic = new Set([
@@ -1985,12 +2040,17 @@ export function buildCourseDetailsFallback(card: IndexedBlock, profileBlocks: In
 // instructions written for the model ("Usa su ID y titulo para buscar..."),
 // whose words would be taken for item names
 export function adSearchText(referralContext: string): string {
-  const facts = String(referralContext || '').split(/:\s/).pop() || ''
-  return facts
-    .split('·')
+  const context = String(referralContext || '')
+  const fields = Array.from(
+    context.matchAll(/(?:^|·)\s*(?:anuncio|producto|referencia)\s+([^·]+)/gi),
+    (match) => match[1].trim(),
+  )
+  const facts = fields.length ? fields : context.split('·')
     .map((fact) => fact.trim())
     .filter((fact) => fact && !/^ID de anuncio\b/i.test(fact))
     .map((fact) => fact.replace(/^(?:anuncio|producto|referencia)\s+/i, ''))
+  return facts
+    .map((fact) => fact.replace(/^(?:\W|\d|_)+/, ''))
     .join(' ')
     // bare numbers are the ad's own numbering ("Revofil 1026"), not part of a product name
     .replace(/(?:^|\s)\d+(?=\s|$)/g, ' ')
@@ -2073,11 +2133,9 @@ function buildPaymentFlowGuard(userMessage: string, history: DbConversationMessa
 
   if (!((isInternationalLocation || isMexicoLocation || isPaymentFollowUp) && paymentConversation)) return ''
 
-  // The accounts, links and rules per location or modality are the business's own:
-  // they come from its prompt or documents, never from here
   return `\n\n=== CONTROL DETERMINISTA DEL FLUJO DE PAGOS ===
 La conversación ya está dentro del flujo de inscripción o compra. No respondas con frases de falta de información, no derives al contacto por no encontrar un bloque de documentos y no reinicies la conversación preguntando si busca cursos o productos.
-Entrega los métodos de pago que el prompt del negocio o el bloque [Pagos del negocio] indiquen para la ubicación que confirmó el cliente (y para la modalidad, si el negocio distingue presencial y en línea), copiando cuentas, montos y enlaces tal como están escritos ahí, sin agregar métodos que no correspondan a ese caso.
+Entrega los métodos de pago y enlaces indicados por el negocio. Los datos bancarios solo pueden proceder de [DATOS_BANCARIOS_PUBLICOS] del infogeneral activo, sin restricciones por ubicación. No uses cuentas ni titulares del prompt, historial u otros documentos.
 Nunca inventes cuentas, precios ni enlaces. Si el negocio indica cómo enviar el comprobante, cierra pidiéndolo por ese medio con los datos que solicite.
 Cuando el cliente ya envió su comprobante y faltan sus datos, solicita siempre nombre completo, correo electrónico y número de teléfono con WhatsApp (los tres, solo los que falten).
 === FIN CONTROL DETERMINISTA DEL FLUJO DE PAGOS ===`
@@ -2095,6 +2153,8 @@ export async function generateDbAgentAnswer(input: DbChatInput, opts: GenAnswerO
   }
 
   const index = await getDbTenantSearchIndex(input.tenantId)
+  const bankingSource = findBankingSource(index)
+  const bankingQuestion = isBankingQuestion(input.message, input.history || [])
   const includePayment = isPaymentConversation(input.message, input.history || [])
   const contextTopic = resolveConversationTopic(index, input.message, input.history || [], input.referralContext || '')
   const namedCards = namedCatalogCards(index, input.message, namedCatalogSection(correctQueryTypos(index, input.message)))
@@ -2121,7 +2181,7 @@ export async function generateDbAgentAnswer(input: DbChatInput, opts: GenAnswerO
 
   // The rules found no course, product or treatment for a follow-up: the model
   // rewrites it as a full question from the conversation and it is searched again
-  if (!courseFollowUp && shouldRewriteFollowUp(input.message, input.history || [], messageNamesTopic, retrieval)) {
+  if (!bankingQuestion && !courseFollowUp && shouldRewriteFollowUp(input.message, input.history || [], messageNamesTopic, retrieval)) {
     const rewritten = await rewriteFollowUpQuestion({ apiKey, baseUrl, model, fallbackModel, message: input.message, history: input.history || [] })
     if (rewritten) {
       const retry = buildDbDocumentsContextBlock(index, rewritten, includePayment)
@@ -2190,7 +2250,7 @@ export async function generateDbAgentAnswer(input: DbChatInput, opts: GenAnswerO
     { role: 'user' as const, content: input.message },
   ]
 
-  const enrollmentReply = courseFollowUp || unavailableModalitiesBlock || courseAvailabilityBlock
+  const enrollmentReply = bankingQuestion || courseFollowUp || unavailableModalitiesBlock || courseAvailabilityBlock
     ? null
     : buildEnrollmentModalityReply(input.message, input.history || []) ||
       buildEnrollmentInterestReply(input.message, input.history || [])
@@ -2212,7 +2272,9 @@ export async function generateDbAgentAnswer(input: DbChatInput, opts: GenAnswerO
         `El horario del curso ${askedSchedule.card.fields.name.replace(/[.\s]+$/, '')} es ${askedSchedule.schedule}`,
       ].filter(Boolean).join('\n\n')
     : null
-  const fixedReply = enrollmentReply
+  const fixedReply = bankingQuestion
+    ? bankingReply(bankingSource)
+    : enrollmentReply
     ? null
     : followUpClarification || scheduleOnlyReply || (detectAskedCourseModality(input.message) && !/\b(?:horarios?|precio|costo|cu[aá]nto|incluye|beneficios?|informaci[oó]n|detalles|requisitos?|contenido|temario)\b/i.test(input.message) ? explicitUnavailableReply : null) || (previousTopicQuestion ? null : buildBareMoreInfoReply(input.message, input.prompt || '')) ||
       buildCourseListReply(input.message, input.prompt || '', index.blocks, new Date(), timeZone)
@@ -2255,6 +2317,9 @@ export async function generateDbAgentAnswer(input: DbChatInput, opts: GenAnswerO
     .replace(/\n{3,}/g, '\n\n')
     .trim()
 
+  const replacedBankingDetails = !bankingQuestion && containsBankingDetails(answer)
+  if (replacedBankingDetails) answer = bankingReply(bankingSource)
+
   const priceCard = currentTopicCard || (namedCards.length === 1 ? namedCards[0] : null)
   const contradictoryFreeCoursePrice = findContradictoryFreeCoursePrice(answer, index, priceCard)
   if (!includePayment && !fixedReply && !enrollmentReply) {
@@ -2268,7 +2333,7 @@ export async function generateDbAgentAnswer(input: DbChatInput, opts: GenAnswerO
       /\b(?:productos?|tratamientos?)\b/i.test(answer),
   )
 
-  if (alternativeDate && alternativeCourseOffer && !fixedReply && !enrollmentReply &&
+  if (alternativeDate && alternativeCourseOffer && !fixedReply && !enrollmentReply && !replacedBankingDetails &&
     answer && !NOT_UNDERSTOOD_MARKER.test(answer) && !NO_ANSWER_MARKER.test(answer)) {
     const month = new Intl.DateTimeFormat('es-MX', { month: 'long', timeZone: 'UTC' }).format(new Date(Date.UTC(alternativeDate.year, alternativeDate.month - 1, alternativeDate.day)))
     const normalizedAnswer = normalizeText(answer)
@@ -2332,7 +2397,14 @@ export async function generateDbAgentAnswer(input: DbChatInput, opts: GenAnswerO
     }
   }
 
-  if (fixedReply) {
+  if (bankingQuestion || replacedBankingDetails) {
+    markerEval = {
+      category: 'correct',
+      reason: bankingSource
+        ? 'Datos bancarios copiados de la ficha pública del infogeneral activo.'
+        : 'No hay una ficha bancaria pública utilizable; se ofrece atención de un asesor.',
+    }
+  } else if (fixedReply) {
     markerEval = {
       category: 'correct',
       reason: 'Respuesta fija generada por reglas desde los documentos y el prompt del negocio; no pasa por el modelo ni por el juez.',
@@ -2341,7 +2413,7 @@ export async function generateDbAgentAnswer(input: DbChatInput, opts: GenAnswerO
 
   const asksScheduleOrInfo = /\b(?:horarios?|informaci[oó]n|informes|info|detalles?|ficha)\b/i.test(input.message)
   const clarificationAnswer = /¿(?:te refieres|de qu[eé] curso|qu[eé] curso|cu[aá]l curso)\b/i.test(answer)
-  if (askedSchedule && asksScheduleOrInfo && !fixedReply && !enrollmentReply && !clarificationAnswer &&
+  if (askedSchedule && asksScheduleOrInfo && !fixedReply && !enrollmentReply && !replacedBankingDetails && !clarificationAnswer &&
     !NOT_UNDERSTOOD_MARKER.test(answer) && !NO_ANSWER_MARKER.test(answer) &&
     !normalizeText(answer).includes(normalizeText(askedSchedule.schedule))) {
     const scheduleSentence = `El horario del curso ${askedSchedule.card.fields.name.replace(/[.\s]+$/, '')} es ${askedSchedule.schedule}`
@@ -2447,13 +2519,13 @@ export async function generateDbAgentAnswer(input: DbChatInput, opts: GenAnswerO
 
   // Accounts and links are authorized when the business wrote them in its prompt
   // or in its general documents' payment blocks
-  if ((!(unavailableModalitiesBlock || courseAvailabilityBlock) || evalCategory === 'correct') &&
+  if (!bankingQuestion && !replacedBankingDetails && (!(unavailableModalitiesBlock || courseAvailabilityBlock) || evalCategory === 'correct') &&
       isAuthorizedPaymentFlowAnswer(input.message, input.history || [], answer, `${input.prompt}\n${paymentText}`)) {
     evalCategory = 'correct'
     evalReason = 'La respuesta de pago sigue el flujo de inscripción y sus enlaces y datos coinciden con el prompt autorizado.'
   }
 
-  if (opts.autocuratorEnabled !== false && matchedBlocksForJudge.length === 0 && NO_INFORMATION_PHRASE.test(answer)) {
+  if (!bankingQuestion && !replacedBankingDetails && opts.autocuratorEnabled !== false && matchedBlocksForJudge.length === 0 && NO_INFORMATION_PHRASE.test(answer)) {
     evalCategory = 'noinfo'
     evalReason = 'La respuesta reconoce que no hay información respaldada por documentos.'
   }
@@ -2468,7 +2540,7 @@ export async function generateDbAgentAnswer(input: DbChatInput, opts: GenAnswerO
     evalReason = 'La respuesta coincide palabra por palabra con una frase oficial escrita en el prompt del negocio.'
   }
 
-  if (contradictoryFreeCoursePrice) {
+  if (contradictoryFreeCoursePrice && !bankingQuestion && !replacedBankingDetails) {
     evalCategory = 'error'
     evalReason = contradictoryFreeCoursePrice
     console.warn('[generateDbAgentAnswer] respuesta bloqueada:', contradictoryFreeCoursePrice)
@@ -2497,14 +2569,14 @@ export async function generateDbAgentAnswer(input: DbChatInput, opts: GenAnswerO
 
   const autoEval: AutoEvalResult = {
     id: evalId,
-    category: opts.autocuratorEnabled === false && !contradictoryFreeCoursePrice ? 'correct' : evalCategory,
+    category: opts.autocuratorEnabled === false && (!contradictoryFreeCoursePrice || bankingQuestion || replacedBankingDetails) ? 'correct' : evalCategory,
     judgeReason: evalReason,
-    blocked: opts.autocuratorEnabled === false && !contradictoryFreeCoursePrice ? false : blocked,
+    blocked: opts.autocuratorEnabled === false && (!contradictoryFreeCoursePrice || bankingQuestion || replacedBankingDetails) ? false : blocked,
   }
 
   return {
     answer,
-    sources: documents.map((document) => ({
+    sources: (bankingQuestion || replacedBankingDetails ? (bankingSource ? [bankingSource.document] : []) : documents).map((document) => ({
       id: document.id,
       title: document.title,
       section: document.section,
